@@ -1,0 +1,3 @@
+[submodule ".codex/agents"]
+	path = .codex/agents
+	url = https://github.com/tsealex/agents.git
