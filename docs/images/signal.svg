@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="64" viewBox="0 0 144 64">
+  <title>UML send signal action</title>
+  <rect width="144" height="64" fill="white"/>
+  <path d="M12 12H110L132 32 110 52H12Z" fill="none" stroke="#222" stroke-width="2"/>
+  <text x="66" y="37" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">Signal event</text>
+</svg>

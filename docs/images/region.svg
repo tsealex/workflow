@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="590" height="144" viewBox="0 0 590 144">
+  <title>UML structured activity node, expansion region, and interruptible activity region</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 10" refX="7" refY="5" markerWidth="8" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto">
+      <path d="M1 1 7 5 1 9" fill="none" stroke="#222" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="590" height="144" fill="white"/>
+  <g fill="none" stroke="#222" stroke-width="1.5">
+    <g stroke-dasharray="5 4">
+      <rect x="12" y="16" width="168" height="96" rx="12"/>
+      <rect x="200" y="16" width="168" height="96" rx="12"/>
+      <rect x="388" y="16" width="140" height="96" rx="12"/>
+    </g>
+    <rect x="63" y="58" width="66" height="30" rx="7"/>
+    <rect x="251" y="49" width="66" height="30" rx="7"/>
+    <circle cx="158" cy="73" r="9"/>
+    <g marker-end="url(#arrow)">
+      <path d="M40 73H62"/>
+      <path d="M129 73H148"/>
+      <path d="M284 24V48"/>
+      <path d="M284 79V104"/>
+    </g>
+    <path d="M407 49H492V79H407L422 64Z"/>
+    <path d="M492 64H516L510 57 541 72 535 64H573" marker-end="url(#arrow)"/>
+    <g fill="white">
+      <path d="M256 10H312V24H256ZM270 10V24M284 10V24M298 10V24"/>
+      <path d="M256 105H312V119H256ZM270 105V119M284 105V119M298 105V119"/>
+    </g>
+  </g>
+  <g fill="#222">
+    <circle cx="34" cy="73" r="6"/>
+    <circle cx="158" cy="73" r="5"/>
+    <g text-anchor="middle" font-family="sans-serif" font-size="12">
+      <text x="96" y="40">«structured»</text>
+      <text x="96" y="77">Action</text>
+      <text x="284" y="68">Action</text>
+      <text x="453" y="68">Cancel</text>
+      <text x="96" y="136">Structured activity node</text>
+      <text x="284" y="136">Expansion region</text>
+      <text x="458" y="136">Interruptible activity region</text>
+    </g>
+  </g>
+</svg>

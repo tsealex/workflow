@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="76" height="64" viewBox="0 0 76 64">
+  <title>UML decision node</title>
+  <rect width="76" height="64" fill="white"/>
+  <path d="M38 10 64 32 38 54 12 32Z" fill="none" stroke="#222" stroke-width="2"/>
+</svg>

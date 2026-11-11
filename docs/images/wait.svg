@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="272" height="92" viewBox="0 0 272 92">
+  <title>UML accept signal action and wait time action</title>
+  <rect width="272" height="92" fill="white"/>
+  <g fill="none" stroke="#222" stroke-width="2" stroke-linejoin="round">
+    <path d="M12 12H132V52H12L32 32Z"/>
+    <path d="M190 12H222L190 52H222Z"/>
+  </g>
+  <g text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">
+    <text x="72" y="77">Wait for event</text>
+    <text x="206" y="77">Wait for time</text>
+  </g>
+</svg>
