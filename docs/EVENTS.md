@@ -24,6 +24,6 @@ An `EventInstance` represents one occurrence of an `Event`. It references the ev
 | --- | --- | --- |
 | `event_id` | `UUID` | Identifies the event definition. |
 | `instance_id` | `UUID` | Uniquely identifies this occurrence of the event. |
-| `execution_id` | `UUID` | Identifies the workflow execution that signaled the event. |
+| `xid` | `UUID` | Identifies the workflow execution that signaled the event. |
 | `notified_at` | `datetime` | Records when the event instance was signaled, in UTC. |
 | `payload` | [DataMap](NODES.md#datamap) | Contains the values validated against the event's `TypeMap`. |

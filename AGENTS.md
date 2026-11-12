@@ -6,7 +6,7 @@
 
 ## Design and implementation specs
 
-- State the problem, scope, constraints, and testable acceptance criteria.
+- State the problem, scope, and constraints.
 - Describe what changes, which components own it, which interfaces it affects, and why the design was chosen.
 - Document dependencies, compatibility, failure handling, rollout, and rollback as needed. Flag open decisions.
 

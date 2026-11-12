@@ -31,7 +31,7 @@ Evaluates its inputs using a user-defined instruction and selects a branch.
 | `instruction` | `str` | Describes how to choose a branch. |
 | `inputs` | [TypeMap](#typemap) | Defines the input attributes and their types. |
 | `branches` | `list[str]` | Defines unique, user-defined branch labels. The list may be empty. The label `default` is reserved. |
-| `output` | `str` | Is the selected branch label from `branches`, or `default` when no named branch is selected. |
+| `outputs` | [DataMap](#datamap) | Contains exactly one attribute, `branch` (`str`). Its value is a label from `branches`, or `default` when no named branch is selected. |
 
 See [Branch edge](EDGES.md#branch-edge) for how branch labels determine outgoing edges.
 
