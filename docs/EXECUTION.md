@@ -20,10 +20,10 @@ Nodes within a workflow execution can share a machine or target different machin
 
 1. `WorkflowExecutor` is configured with the `WorkflowEngine` URL.
 2. On first startup, the executor calls `RegisterExecutor` over gRPC at that URL. The engine returns an executor ID and token, and the executor saves both.
-3. The executor calls `ConnectExecutor` with its saved token to receive node execution attempts on a server stream.
+3. The executor opens a bidirectional `ConnectExecutor` call and sends its saved token in the gRPC call metadata.
 4. The engine records each attempt before sending it to the selected executor. It sends the next attempt to that executor only after committing the current attempt’s outcome.
-5. When the attempt finishes, the executor calls `ReportOutcome` with its token and a report containing `node_xid`, status, outputs, and the attempt’s start and finish times. The engine looks up the node execution, verifies that the caller is its recorded executor, and returns success after committing the checkpoint.
-6. If the stream closes, the executor calls `ConnectExecutor` again at the configured URL with the saved token. If the executor loses a `ReportOutcome` reply, it can resend the report. The engine acknowledges an already committed report without applying it again.
+5. When the attempt finishes, the executor sends a `NodeExecutionResult` on the same call. The engine looks up the node execution, verifies that the authenticated executor is the one recorded for that attempt, and commits the checkpoint.
+6. If the connection closes, the executor opens a new `ConnectExecutor` call with its saved token. How the executor confirms that a result was committed and reconciles pending results after reconnecting remains open.
 
 ```mermaid
 sequenceDiagram
@@ -39,16 +39,11 @@ sequenceDiagram
         Note over E: Record the node execution attempt
         E-->>X: NodeExecutionDispatch on the open stream
         Note over X: Run the node execution attempt
-        X->>E: ReportOutcome with NodeExecutionReport
+        X->>E: NodeExecutionResult on the open stream
         Note over E: Commit the checkpoint
-        E-->>X: Success
     end
     opt Stream closes
         X->>E: ConnectExecutor with saved token
-    end
-    opt ReportOutcome reply was lost
-        X->>E: Resend ReportOutcome
-        E-->>X: Success for the committed report
     end
 ```
 
@@ -71,35 +66,29 @@ RegisterExecutorResponse {
 
 ###### `ConnectExecutor`
 
-The executor opens a server stream. When a node execution is ready for that executor, the engine sends a `NodeExecutionDispatch` with the node definition and its inputs. The `node_xid` identifies the `node_execution` row.
+The engine streams `NodeExecutionDispatch` messages with node definitions and their inputs. The executor streams `NodeExecutionResult` messages back over the same call. In both messages, `node_xid` identifies the `node_execution` row.
 
 ```protobuf
-rpc ConnectExecutor(google.protobuf.Empty) returns (stream NodeExecutionDispatch)
+rpc ConnectExecutor(stream NodeExecutionResult) returns (stream NodeExecutionDispatch)
 
 NodeExecutionDispatch {
   node_xid: UUID
   node: Struct
   inputs: DataMap
 }
-```
 
-###### `ReportOutcome`
-
-The executor reports `COMPLETED` or `FAILED` for a finished attempt. For a completed action, `outputs` contains the action’s output attributes. The engine applies them to the workflow’s `DataMap` using the node’s `output_states` bindings. For a completed decision, `outputs.branch` contains the selected branch label, and the engine follows the corresponding edge. Use an empty `DataMap` when there are no outputs.
-
-In the report, `started_at` and `ended_at` record when the executor started and finished the attempt.
-
-```protobuf
-rpc ReportOutcome(NodeExecutionReport) returns (google.protobuf.Empty)
-
-NodeExecutionReport {
+NodeExecutionResult {
   node_xid: UUID
   status: ExecutionStatus
-  outputs: DataMap
+  outputs: optional DataMap
   started_at: datetime
   ended_at: datetime
 }
 ```
+
+The executor reports `COMPLETED` or `FAILED` for a finished attempt. In `NodeExecutionResult`, `started_at` and `ended_at` record when the executor started and finished the attempt.
+
+Omit `outputs` for a failed attempt or when a completed node returns an empty `DataMap`. Otherwise, include the return value defined by the [executable interface](WORKFLOW.md#executable-interface).
 
 ## Lifecycle
 
@@ -156,7 +145,7 @@ After each completed step, the engine records the node status, applies the node�
 
 ## Recovery and open decisions
 
-- Restore runnable node visits and workflow state from the last committed checkpoint. The policy for recovering in-flight executor work remains open, including when an action with external side effects can be retried and how to handle a resent report after a retry begins.
+- Restore runnable node visits and workflow state from the last committed checkpoint. The policy for recovering in-flight executor work remains open, including how to confirm committed results over the stream, how to distinguish a replayed result from a later attempt’s result, and when an action with external side effects can be retried.
 - Derive each wait’s configuration from the snapshotted `WaitNode`. The engine still needs a durable way to preserve timer deadlines and event delivery progress across restarts. The representation remains open.
 - Keep join arrivals scoped to the same [Fork activation](EDGES.md#join). The representation for reconstructing activation membership and pending arrivals after a restart remains open, including for nested Forks and loops.
 - Define the ordering of concurrent writes to overlapping state paths in the [state binding spec](WORKFLOW.md#statemap).
