@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="376" height="136" viewBox="0 0 376 136">
+  <title>Interruptible edge exiting a nested region</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#222" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="376" height="136" fill="white"/>
+  <g fill="none" stroke="#222" stroke-width="2">
+    <rect x="12" y="12" width="352" height="112" rx="10"/>
+    <rect x="26" y="47" width="156" height="63" rx="8" stroke-dasharray="5 4"/>
+    <rect x="44" y="71" width="112" height="28" rx="7"/>
+    <path d="M156 85H170L177 75 187 94 195 85H236" marker-end="url(#arrow)"/>
+    <rect x="236" y="65" width="112" height="40" rx="9"/>
+  </g>
+  <g text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">
+    <text x="188" y="34">Enclosing region</text>
+    <text x="104" y="65">Nested region</text>
+    <text x="100" y="90">Wait</text>
+    <text x="292" y="90">Step B</text>
+  </g>
+</svg>

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="88" viewBox="0 0 440 88">
+  <title>Implicit edge from initial to Step A</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 7 4 1 7" fill="none" stroke="#222" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="440" height="88" fill="white"/>
+  <g fill="none" stroke="#222" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M42 38H98" stroke-dasharray="5 4"/>
+    <path d="M194 38H242"/>
+    <path d="M338 38H396"/>
+  </g>
+  <circle cx="32" cy="38" r="9" fill="#222"/>
+  <circle cx="408" cy="38" r="11" fill="none" stroke="#222" stroke-width="2"/>
+  <circle cx="408" cy="38" r="7" fill="#222"/>
+  <g fill="none" stroke="#222" stroke-width="2">
+    <rect x="98" y="18" width="96" height="40" rx="9"/>
+    <rect x="242" y="18" width="96" height="40" rx="9"/>
+  </g>
+  <g text-anchor="middle" font-family="sans-serif" font-size="14" fill="#222">
+    <text x="32" y="73">initial</text>
+    <text x="146" y="43">Step A</text>
+    <text x="290" y="43">Step B</text>
+    <text x="408" y="73">final</text>
+  </g>
+</svg>

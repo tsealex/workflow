@@ -13,9 +13,13 @@ A workflow embeds a root region and defines the states used by its nodes.
 | `name` | `str` (optional) | Names the workflow. |
 | `description` | `str` (optional) | Describes the workflow's purpose. |
 
-Execution starts at the root region's `initial` point and completes at its `final` point. Each run holds its own state values.
+A workflow execution starts at the root region's `initial` node and completes at its `final` node. Each workflow execution holds its own state values.
 
 Each node belongs to this workflow. Its saved changes are tracked by the workflow revision.
+
+## Edges
+
+See [Edges](EDGES.md) for edge definitions, region connections, and execution patterns.
 
 ## Node state bindings
 
@@ -27,8 +31,8 @@ Reads workflow states into its inputs and writes its outputs to workflow states.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `input_states` | [StateMap](#statemap) | Maps input attributes to states to read. |
-| `output_states` | [StateMap](#statemap) | Maps output attributes to states to write. |
+| `input_states` | [StateMap](#statemap) | Maps input attributes to workflow state paths to read. |
+| `output_states` | [StateMap](#statemap) | Maps output attributes to workflow state paths to write. |
 
 ### `DecisionNode`
 
@@ -36,19 +40,19 @@ Reads workflow states into its inputs and selects a branch.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `input_states` | [StateMap](#statemap) | Maps input attributes to states to read. |
+| `input_states` | [StateMap](#statemap) | Maps input attributes to workflow state paths to read. |
 
-The selected branch name determines the outgoing edge.
+The selected branch label determines the [outgoing edge](EDGES.md#branch-edge).
 
 ### `SignalNode`
 
 Reads workflow states to populate the event payload.
 
-See [Events](EVENTS.md) for workspace scope and how a signal reaches matching waits.
+See [Events](EVENTS.md) for how a `WaitNode` receives a matching event instance in the same workspace.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `input_states` | [StateMap](#statemap) | Maps event payload attributes to states to read. |
+| `input_states` | [StateMap](#statemap) | Maps event payload attributes to workflow state paths to read. |
 
 ### `WaitNode`
 
@@ -56,13 +60,13 @@ When configured with `event`, writes received payload attributes to workflow sta
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `output_states` | [StateMap](#statemap) (optional) | Maps received payload attributes to states to write. |
+| `output_states` | [StateMap](#statemap) (optional) | Maps received payload attributes to workflow state paths to write. |
 
 ## Types
 
 ### `StateMap`
 
-A map from node attribute names to workflow state names. Keys and values support dotted paths for nested attributes.
+A map from node attribute paths to workflow state paths. Use dotted paths for nested attributes or states.
 
 ```json
 {
@@ -74,3 +78,5 @@ A map from node attribute names to workflow state names. Keys and values support
 For `input_states`, the node reads the state path into the named attribute. For `output_states`, it writes the attribute's value to the state path. An empty map binds no attributes.
 
 Each mapping must reference declared node attributes and workflow states with compatible types. Mappings contain only names or paths. Calculations belong in the node's logic.
+
+The ordering of concurrent writes to the same workflow state path remains to be defined.
