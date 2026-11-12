@@ -2,10 +2,6 @@
 
 The workflow model defines five node types. Every workflow embeds a root `RegionNode`, and regions can contain other regions. The workflow attributes and node state bindings are defined in [Workflow](WORKFLOW.md). [UML 2.5.1, chapters 13, 15, and 16](https://www.omg.org/spec/UML/2.5.1/PDF)
 
-Attribute types use Python syntax, with `timedelta` and `datetime` from `datetime`.
-
-“Signal” is the verb for emitting an event. “Event” names the object being signaled or awaited.
-
 ## `ActionNode`
 
 ![UML action shown as a rounded rectangle](images/action.svg)
@@ -14,6 +10,7 @@ Runs an arbitrary step and makes its outputs available to downstream nodes.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `action`. |
 | `instruction` | `str` | Describes the work to perform. |
 | `inputs` | [TypeMap](#typemap) | Defines the input attributes and their types. |
@@ -29,6 +26,7 @@ Evaluates its inputs using a user-defined instruction and selects a branch.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `decision`. |
 | `instruction` | `str` | Describes how to choose a branch. |
 | `inputs` | [TypeMap](#typemap) | Defines the input attributes and their types. |
@@ -47,11 +45,12 @@ Signals an event and continues without waiting for a response.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `signal`. |
-| `event` | `str` | Identifies the event to signal. |
-| `inputs` | [TypeMap](#typemap) | Describes the payload attributes and types from the event definition. |
+| `event_id` | `UUID` | Identifies the [event](EVENTS.md#event) to signal in the workflow's workspace. |
+| `inputs` | [TypeMap](#typemap) | Describes the payload attributes and types declared by the event. |
 
-Events and their payload attributes are defined separately and shared with `WaitNode`.
+See [signaling and receiving](EVENTS.md#signaling-and-receiving) for how the signal reaches matching waits.
 
 It maps to UML's `SendSignalAction`.
 
@@ -63,6 +62,7 @@ Pauses the current path for a duration, until a timestamp, or until a matching e
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `wait`. |
 | `duration` | `timedelta` (optional) | Sets how long to wait. |
 | `until` | `datetime` (optional) | Sets the timestamp at which the path resumes. |
@@ -83,6 +83,7 @@ Runs a nested graph and can repeat it once per item in a collection.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `region`. |
 | `nodes` | `list[Node]` | Contains the child node definitions. |
 | `edges` | `list[Edge]` | Contains connections between child nodes. |
@@ -100,16 +101,16 @@ In UML, nesting maps to `StructuredActivityNode`, iteration to `ExpansionRegion`
 
 ### `EventSelector`
 
-Selects an event by name and optional payload conditions.
+Selects an event by UUID and optional payload conditions.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `event` | `str` | Names a separately defined event. |
+| `event_id` | `UUID` | Identifies the [event](EVENTS.md#event) in the workflow's workspace. |
 | `filter` | [FilterMap](#filtermap) (optional) | Payload conditions. Omit or leave empty to accept any payload. |
 
 ```json
 {
-  "event": "review_completed",
+  "event_id": "b12d61af-d5d4-4d7a-8577-93adf18b5f10",
   "filter": {
     "order.id": {"=": "order-123"},
     "amount": {">=": 100, "<": 1000}
@@ -143,5 +144,20 @@ A map from attribute names to `str`, `bool`, `number`, or another `TypeMap` for 
   "address": {"city": "str"},
   "amount": "number",
   "approved": "bool"
+}
+```
+
+### `DataMap`
+
+A `DataMap` holds concrete values for the attributes declared by a [TypeMap](#typemap). Each value must match its declared type. If an attribute is declared as a nested `TypeMap`, its value is a nested `DataMap`.
+
+This `DataMap` matches the `TypeMap` above.
+
+```json
+{
+  "name": "Jordan",
+  "address": {"city": "Oakland"},
+  "amount": 125.50,
+  "approved": true
 }
 ```

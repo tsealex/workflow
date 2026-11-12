@@ -6,6 +6,7 @@ A workflow embeds a root region and defines the states used by its nodes.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
+| `id` | `UUID` | Uniquely identifies the workflow. |
 | `root` | [RegionNode](NODES.md#regionnode) | Contains the workflow's nodes and edges. |
 | `states` | [TypeMap](NODES.md#typemap) | Defines workflow state names and their types. |
 | `revision` | `int` | Increments whenever node changes are saved, including changes within nested regions. |
@@ -13,6 +14,8 @@ A workflow embeds a root region and defines the states used by its nodes.
 | `description` | `str` (optional) | Describes the workflow's purpose. |
 
 Execution starts at the root region's `initial` point and completes at its `final` point. Each run holds its own state values.
+
+Each node belongs to this workflow. Its saved changes are tracked by the workflow revision.
 
 ## Node state bindings
 
@@ -40,6 +43,8 @@ The selected branch name determines the outgoing edge.
 ### `SignalNode`
 
 Reads workflow states to populate the event payload.
+
+See [Events](EVENTS.md) for workspace scope and how a signal reaches matching waits.
 
 | Attribute | Type | Description |
 | --- | --- | --- |

@@ -9,7 +9,6 @@
 - State the problem, scope, constraints, and testable acceptance criteria.
 - Describe what changes, which components own it, which interfaces it affects, and why the design was chosen.
 - Document dependencies, compatibility, failure handling, rollout, and rollback as needed. Flag open decisions.
-- Map each acceptance criterion to a check and expected result. Cover relevant edge cases and failures.
 
 ## Agent rules
 
