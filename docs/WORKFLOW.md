@@ -8,12 +8,12 @@ A workflow embeds a root region and defines the states used by its nodes.
 | --- | --- | --- |
 | `id` | `UUID` | Uniquely identifies the workflow. |
 | `root` | [RegionNode](NODES.md#regionnode) | Contains the workflow's nodes and edges. |
-| `states` | [TypeMap](NODES.md#typemap) | Defines workflow state names and their types. |
+| `states` | [`JSONSchema`](#jsonschema) | Defines the workflow state object and its attributes. |
 | `revision` | `int` | Increments whenever node changes are saved, including changes within nested regions. |
 | `name` | `str` (optional) | Names the workflow. |
 | `description` | `str` (optional) | Describes the workflow's purpose. |
 
-A workflow execution starts at the root region's `initial` node and completes at its `final` node. Each workflow execution holds its own state values. See [Workflow execution](EXECUTION.md) for lifecycle and persistence.
+A workflow execution starts at the root region’s `initial` node and completes when the root region completes. Each workflow execution holds its own state values. See [Workflow execution](EXECUTION.md) for lifecycle and persistence.
 
 Each node belongs to this workflow. Its saved changes are tracked by the workflow revision.
 
@@ -32,8 +32,8 @@ Reads workflow states into its inputs and writes its outputs to workflow states.
 | Attribute | Type | Description |
 | --- | --- | --- |
 | `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `instruction` to run the action. |
-| `input_states` | [StateMap](#statemap) | Maps input attributes to workflow state paths to read. |
-| `output_states` | [StateMap](#statemap) | Maps output attributes to workflow state paths to write. |
+| `input_states` | [list[str]](#state-paths) | Lists workflow state paths to read. |
+| `output_states` | [list[str]](#state-paths) | Lists workflow state paths to write. |
 
 ### `DecisionNode`
 
@@ -42,9 +42,9 @@ Reads workflow states into its inputs and selects a branch.
 | Attribute | Type | Description |
 | --- | --- | --- |
 | `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `instruction` to select a branch. |
-| `input_states` | [StateMap](#statemap) | Maps input attributes to workflow state paths to read. |
+| `input_states` | [list[str]](#state-paths) | Lists workflow state paths to read. |
 
-The `branch` attribute in `outputs` determines the [outgoing edge](EDGES.md#branch-edge).
+The `branch` value returned by `execute` determines the [outgoing edge](EDGES.md#branch-edge).
 
 ### `SignalNode`
 
@@ -54,7 +54,7 @@ See [Events](EVENTS.md) for how a `WaitNode` receives a matching event instance 
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `input_states` | [StateMap](#statemap) | Maps event payload attributes to workflow state paths to read. |
+| `input_states` | [list[str]](#state-paths) | Lists workflow state paths to copy into the event payload at the same paths. |
 
 ### `WaitNode`
 
@@ -62,11 +62,11 @@ When configured with `event`, writes received payload attributes to workflow sta
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `output_states` | [StateMap](#statemap) (optional) | Maps received payload attributes to workflow state paths to write. |
+| `output_states` | [list[str]](#state-paths) (optional) | Lists workflow state paths to write from the same paths in the received payload. |
 
 ## Executable interface
 
-When compiling a node’s `instruction`, the LLM generates a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each node execution attempt. The validation harness calls `test_execute` during compilation.
+When compiling a node’s `instruction`, the LLM generates a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution attempt. The validation harness calls `test_execute` during compilation.
 
 ```python
 from abc import ABC, abstractmethod
@@ -82,30 +82,67 @@ class Executable(ABC):
         ...
 ```
 
-- `inputs` contains the node’s input attributes after the engine resolves `input_states`. The attribute names and value types follow the node’s `inputs` declaration.
-- An `ActionNode` returns the output attributes declared by the node. Return an empty [DataMap](NODES.md#datamap) if the action has no outputs. The engine applies `output_states` to update workflow state.
+- The LLM should generate idempotent `execute` implementations where possible so that retrying the same node visit does not duplicate external side effects.
+- Pass the values selected by `input_states` to `execute` as a nested [DataMap](NODES.md#datamap).
+- Return a nested `DataMap` containing the values at the paths in `output_states` for an `ActionNode`. Return an empty `DataMap` when the list is empty.
 - A `DecisionNode` returns `{"branch": label}`, where `label` is a declared branch or `"default"`. The engine uses that label to select the outgoing edge.
-- The executor reports the attempt as failed if `execute` raises an exception or returns a value that violates the node’s output contract.
+- Validate each selected input against its schema in `Workflow.states` before calling `execute`.
+- Report the attempt as failed if input validation fails, `execute` raises an exception, or its return value fails the applicable output validation.
 
 ### Code validation
 
 The generated `test_execute` calls `execute` with representative inputs and asserts the expected outputs. It can temporarily replace external dependencies with test doubles. The validation harness runs `test_execute` in an isolated environment without live credentials and treats an exception as a validation failure.
 
-## Types
+## State paths
 
-### `StateMap`
+Use a state name for a top-level field and a dotted path for a nested field. Each path must resolve to a property declared in `Workflow.states`. An empty list selects no values.
 
-A map from node attribute paths to workflow state paths. Use dotted paths for nested attributes or states.
+For example, with `input_states: ["order.total"]`, the engine passes `{"order": {"total": 125.50}}` to `execute`. With `output_states: ["payment.approved"]`, the action returns `{"payment": {"approved": true}}` and the engine writes only `payment.approved`.
+
+- Derive the types for code generation from the selected paths in `Workflow.states`.
+- Fail the node attempt if a selected read or write value is missing.
+- Validate each state write against the subschema for its destination path before applying the attempt’s writes. Reject all writes from the attempt if validation fails.
+- Validate the payload assembled by a `SignalNode` against the event’s payload schema before signaling it.
+- Omit `output_states` on duration and timestamp waits.
+
+The ordering of concurrent writes to the same workflow state path remains to be defined.
+
+## Workflow inputs
+
+Callers can supply initial values for any attribute declared in `Workflow.states`, including attributes that nodes may write later. Use data flow analysis to identify required launch inputs. If a read can be reached along an execution path with no prior setter for that state path, mark the attribute as required in `Workflow.states`. For a required nested input, require each property along its path in the corresponding object schema.
+
+Validate launch inputs against the root schema before initializing execution state. The policy for rechecking object-level constraints after state writes remains open.
+
+## `JSONSchema`
+
+Event payload definitions and workflow state declarations use [JSON Schema](https://json-schema.org/draft/2020-12). Each contract has `"type": "object"` at its root. Define attributes with `properties` and list mandatory attributes in `required`. Apply the same rules to nested objects.
 
 ```json
 {
-  "amount": "order.total",
-  "address.city": "customer.address.city"
+  "type": "object",
+  "properties": {
+    "name": {"type": "string"},
+    "address": {
+      "type": "object",
+      "properties": {
+        "city": {"type": "string"}
+      },
+      "required": ["city"]
+    },
+    "amount": {"type": "number"},
+    "approved": {"type": "boolean"}
+  },
+  "required": ["name", "address", "amount", "approved"]
 }
 ```
 
-For `input_states`, the node reads the state path into the named attribute. For `output_states`, it writes the attribute's value to the state path. An empty map binds no attributes.
+### Empty object schema
 
-Each mapping must reference declared node attributes and workflow states with compatible types. Mappings contain only names or paths. Calculations belong in the node's logic.
+Use this schema for a contract that accepts only an empty object.
 
-The ordering of concurrent writes to the same workflow state path remains to be defined.
+```json
+{
+  "type": "object",
+  "maxProperties": 0
+}
+```

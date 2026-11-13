@@ -13,8 +13,6 @@ Runs an arbitrary step and makes its outputs available to downstream nodes.
 | `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `action`. |
 | `instruction` | `str` | Describes the work to perform. |
-| `inputs` | [TypeMap](#typemap) | Defines the input attributes and their types. |
-| `outputs` | [TypeMap](#typemap) | Defines the output attributes and their types. |
 
 It maps to UML's `Action`, the base class for executable steps.
 
@@ -22,16 +20,14 @@ It maps to UML's `Action`, the base class for executable steps.
 
 ![UML decision shown as a diamond](images/decision.svg)
 
-Evaluates its inputs using a user-defined instruction and selects a branch.
+Evaluates its inputs using a user-defined instruction and selects a branch. The execution result contains a `branch` value from `branches` or `default`.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
 | `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `decision`. |
 | `instruction` | `str` | Describes how to choose a branch. |
-| `inputs` | [TypeMap](#typemap) | Defines the input attributes and their types. |
 | `branches` | `list[str]` | Defines unique, user-defined branch labels. The list may be empty. The label `default` is reserved. |
-| `outputs` | [DataMap](#datamap) | Contains exactly one attribute, `branch` (`str`). Its value is a label from `branches`, or `default` when no named branch is selected. |
 
 See [Branch edge](EDGES.md#branch-edge) for how branch labels determine outgoing edges.
 
@@ -48,7 +44,6 @@ Signals an event and continues without waiting for a response.
 | `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `signal`. |
 | `event_id` | `UUID` | Identifies the [event](EVENTS.md#event) to signal in the workflow's workspace. |
-| `inputs` | [TypeMap](#typemap) | Describes the payload attributes and types declared by the event. |
 
 See [Events](EVENTS.md) for how the signal reaches matching waits.
 
@@ -64,12 +59,13 @@ Pauses the current path for a duration, until a timestamp, or until a matching e
 | --- | --- | --- |
 | `id` | `UUID` | Uniquely identifies the node. |
 | `type` | `str` | Always `wait`. |
-| `duration` | `timedelta` (optional) | Sets how long to wait. |
-| `until` | `datetime` (optional) | Sets the timestamp at which the path resumes. |
+| `duration` | `timedelta` (optional) | Sets the [duration](EVENTS.md#duration) to wait. |
+| `until` | `datetime` (optional) | Sets the [timestamp](EVENTS.md#timestamp) at which the path can resume. |
 | `event` | [EventSelector](#eventselector) (optional) | Selects the event instances that can resume the path. |
-| `outputs` | [TypeMap](#typemap) (optional) | Describes the payload attributes and types when waiting for an event. |
 
 Set exactly one of `duration`, `until`, or `event`.
+
+Duration and timestamp waits carry no payload. An event-based wait can write values from the matching `EventInstance` payload through its [state bindings](WORKFLOW.md#waitnode).
 
 The serialized time formats remain to be defined.
 
@@ -89,11 +85,11 @@ Runs a nested graph and can repeat it once per item in a collection.
 | `edges` | [`list[Edge]`](EDGES.md#edge) | Contains the [edges](EDGES.md#edges) owned by the region. |
 | `iteration` | `str` (optional) | Specifies the workflow state name or path containing the collection to iterate over. |
 
-Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. Reaching `final` in a nested region completes that region execution. Reaching `final` in the root region completes the workflow execution.
+Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. For a region without iteration, reaching `final` completes the region. When the root region completes, the workflow execution completes.
 
 A child node's enclosing region is determined by membership in `RegionNode.nodes`. When loading a workflow revision, `WorkflowEngine` can derive a node ID to enclosing region ID lookup. The root region has no enclosing region.
 
-An iterating region completes normally when all iterations finish.
+An iterating region runs from `initial` to `final` once per item. Reaching `final` completes that iteration. The region completes normally after all iterations finish.
 
 See [Interruptible edge](EDGES.md#interruptible-edge) for how an edge can exit a region before normal completion.
 
@@ -135,25 +131,11 @@ Maps attribute paths to one or more operator–operand pairs. Paths support nest
 | `in` | List of values | Equals any listed value. |
 | `not in` | List of values | Differs from every listed value. |
 
-
-### `TypeMap`
-
-A map from attribute names to `str`, `bool`, `number`, or another `TypeMap` for nested attributes. `number` includes integers and floating-point numbers.
-
-```json
-{
-  "name": "str",
-  "address": {"city": "str"},
-  "amount": "number",
-  "approved": "bool"
-}
-```
-
 ### `DataMap`
 
-A `DataMap` holds concrete values for the attributes declared by a [TypeMap](#typemap). Each value must match its declared type. If an attribute is declared as a nested `TypeMap`, its value is a nested `DataMap`.
+A `DataMap` is a Python dictionary containing concrete values. When the input arrives as raw JSON text, parse it with `json.loads()` before validating the resulting value against its contract with `jsonschema`. A valid object is available to the caller as a dictionary.
 
-This `DataMap` matches the `TypeMap` above.
+This `DataMap` matches the [`JSONSchema` example](WORKFLOW.md#jsonschema).
 
 ```json
 {

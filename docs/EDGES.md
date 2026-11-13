@@ -28,7 +28,7 @@ For `Step A → Step B → final`, an implicit edge `initial → Step A` would b
 
 ![Dashed arrow from initial to Step A, followed by solid arrows to Step B and final](images/implicit-edge.svg)
 
-After implicit edges are added, disable a node if it is disconnected from either `initial` or `final` in its region. Check connectivity using edges within that region, regardless of their direction.
+After adding implicit edges, check paths in the direction of execution. A valid path starts at the region’s `initial` node and ends at its `final` node or with an interruptible edge. Disable nodes that lie on no valid path.
 
 ### Branch edge
 

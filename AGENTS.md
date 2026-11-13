@@ -12,6 +12,7 @@
 
 ## Agent rules
 
+- Prefer IntelliJ tools for editing files when available.
 - Use established project terminology consistently across documentation and code.
 - Write one actionable directive per bullet. Include conditions and exceptions when they affect the action.
 - Define shared rules once. Scope local rules narrowly and state any overrides.

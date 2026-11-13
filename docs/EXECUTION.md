@@ -10,7 +10,7 @@
 
 ### `WorkflowExecutor`
 
-`WorkflowExecutor` runs node execution attempts on a `Machine`. It registers with `WorkflowEngine`, runs the attempts the engine sends it, and reports their outcomes. For actions and decisions, it calls the node’s [Python entry point](WORKFLOW.md#executable-interface).
+`WorkflowExecutor` runs node execution attempts on a `Machine`. It registers with `WorkflowEngine`, runs the attempts the engine sends it, and reports their outcomes. The engine dispatches `ActionNode` and `DecisionNode` attempts to the executor, which calls their [Python entry point](WORKFLOW.md#executable-interface). The engine handles region traversal, commits signals, and resumes waits.
 
 A `Machine` is a physical or virtual computer with its own execution environment, including installed software, environment variables, profiles, and secret references. Node execution attempts use the environment of their assigned machine.
 
@@ -100,7 +100,7 @@ The lifecycle describes how a `WorkflowExecution` moves from creation to complet
 | `RUNNING` | The engine has begun and at least one path is active or can advance. |
 | `WAITING` | Every remaining path is blocked on a timer or event, directly or through a join. |
 | `FAILED` | An unrecoverable error ended the execution. |
-| `COMPLETED` | The execution reached the root region’s `final` node under the applicable join or merge rules. |
+| `COMPLETED` | The root region completed under the applicable iteration, join, and merge rules. |
 
 Set `started_at` when creating the execution in `READY`. Set `ended_at` when it enters `FAILED` or `COMPLETED`. A timer or event can move a waiting execution back to `RUNNING`.
 
@@ -119,7 +119,7 @@ Set `started_at` when creating the execution in `READY`. Set `ended_at` when it 
 | `status` | `ExecutionStatus` | Stores the workflow execution status. |
 | `started_at` | `datetime` | Records when the execution was created. |
 | `ended_at` | `datetime` (nullable) | Records when the execution ended. |
-| `states` | JSON | Stores the current [DataMap](NODES.md#datamap), initialized from the launch inputs. |
+| `states` | JSON | Stores the current [DataMap](NODES.md#datamap), initialized from the validated [workflow inputs](WORKFLOW.md#workflow-inputs). |
 
 ### `node_execution`
 
@@ -148,5 +148,5 @@ After each completed step, the engine records the node status, applies the node�
 - Restore runnable node visits and workflow state from the last committed checkpoint. The policy for recovering in-flight executor work remains open, including how to confirm committed results over the stream, how to distinguish a replayed result from a later attempt’s result, and when an action with external side effects can be retried.
 - Derive each wait’s configuration from the snapshotted `WaitNode`. The engine still needs a durable way to preserve timer deadlines and event delivery progress across restarts. The representation remains open.
 - Keep join arrivals scoped to the same [Fork activation](EDGES.md#join). The representation for reconstructing activation membership and pending arrivals after a restart remains open, including for nested Forks and loops.
-- Define the ordering of concurrent writes to overlapping state paths in the [state binding spec](WORKFLOW.md#statemap).
+- Define the ordering of concurrent writes to overlapping state paths in the [state binding spec](WORKFLOW.md#state-paths).
 - Defer persisted node results and workflow or node failure details.
