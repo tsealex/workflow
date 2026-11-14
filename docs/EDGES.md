@@ -64,15 +64,16 @@ A join waits for all paths from the same activation of a fork, then continues on
 
 A merge continues when the selected path from its decision arrives.
 
-## Example graphs
+## Example workflows
 
-These diagrams show execution patterns. A fork is represented by a non-decision node with multiple outgoing edges. A join or merge can be the convergence at a regular node or at a region's `final`.
+These diagrams show execution patterns. A fork is represented by a non-decision node with multiple outgoing edges. A join or merge can be the convergence at a regular node or at a region's `final`. A filled circle marks `initial`, and a filled circle inside a ring marks `final`.
 
 ### Nested forks and a decision
 
 ```mermaid
 flowchart TD
-    Start([initial]) --> Outer[Start checks]
+    Start@{ shape: f-circ, label: "" }
+    Start --> Outer[Start checks]
     Outer --> Inner[Start payment checks]
     Outer --> Stock[Check stock]
     Inner --> Address[Check address]
@@ -85,7 +86,8 @@ flowchart TD
     MethodResult --> Payment
     Payment --> Result[Record all checks]
     Stock --> Result
-    Result --> End([final])
+    End@{ shape: fr-circ, label: "" }
+    Result --> End
 ```
 
 `Record payment method check` is a merge. It runs when either `Check card` or `Check invoice` arrives, according to the selected branch. `Record payment checks` joins that merge's path with `Check address` from the same activation of `Start payment checks`. Its completion contributes one arrival to `Record all checks`, which also waits for `Check stock` from the same activation of `Start checks`. If this graph runs inside an iterating region, each iteration has its own fork activations.
@@ -94,11 +96,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Start([initial]) --> Prepare[Prepare order]
+    Start@{ shape: f-circ, label: "" }
+    Start --> Prepare[Prepare order]
     subgraph Review["Review region"]
         direction LR
-        Entry([initial]) --> Check[Check order]
-        Check --> Exit([final])
+        Entry@{ shape: f-circ, label: "" }
+        Entry --> Check[Check order]
+        Exit@{ shape: fr-circ, label: "" }
+        Check --> Exit
     end
     Prepare -. invalid .-> Check
 ```
@@ -109,9 +114,11 @@ Reject the edge from `Prepare order` to `Check order`. To enter the nested regio
 
 ```mermaid
 flowchart LR
-    Start([initial]) --> Decide{Approved?}
+    Start@{ shape: f-circ, label: "" }
+    Start --> Decide{Approved?}
     Decide -->|approved| Ship[Ship order]
-    Ship --> End([final])
+    End@{ shape: fr-circ, label: "" }
+    Ship --> End
 ```
 
 Reject this decision because it lacks an explicit `default` edge. The validator cannot supply one as an implicit edge. A node that simply lies on no valid path is disabled under the [implicit edge rules](#implicit-edge).

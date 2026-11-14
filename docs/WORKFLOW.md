@@ -31,7 +31,7 @@ Reads workflow states into its inputs and writes its outputs to workflow states.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `instruction` to run the action. |
+| `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `description` to run the action. |
 | `input_states` | [list[str]](#state-paths) | Lists workflow state paths to read. |
 | `output_states` | [list[str]](#state-paths) | Lists workflow state paths to write. |
 
@@ -41,7 +41,7 @@ Reads workflow states into its inputs and selects a branch.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `instruction` to select a branch. |
+| `code` | `str` | Stores the [Python code](#executable-interface) an LLM generates from `description` to select a branch. |
 | `input_states` | [list[str]](#state-paths) | Lists workflow state paths to read. |
 
 The `branch` value returned by `execute` determines the [outgoing edge](EDGES.md#branch-edge).
@@ -66,7 +66,7 @@ When configured with `event`, writes received payload attributes to workflow sta
 
 ## Executable interface
 
-When compiling a node’s `instruction`, the LLM generates a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution attempt. The validation harness calls `test_execute` during compilation.
+During compilation, the LLM uses the node’s `description` to generate a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution attempt. The validation harness calls `test_execute` during compilation.
 
 ```python
 from abc import ABC, abstractmethod
@@ -114,6 +114,20 @@ Callers can supply initial values for any attribute declared in `Workflow.states
 Validate launch inputs against the root schema before initializing execution state. The policy for rechecking object-level constraints after state writes remains open.
 
 ## `JSONSchema`
+
+```
+JSONSchema := {
+  "type": "object" | "array" | "string" | "number" | "boolean",
+  "$ref": "#/$defs/TypeName", // optional reference to a named type
+  "$defs": {
+    TypeName: JSONSchema
+  },
+  "properties": {
+    AttributeName: JSONSchema
+  },
+  "required": [AttributeName],
+}
+```
 
 Event payload definitions and workflow state declarations use [JSON Schema](https://json-schema.org/draft/2020-12). Each contract has `"type": "object"` at its root. Define attributes with `properties` and list mandatory attributes in `required`. Apply the same rules to nested objects.
 

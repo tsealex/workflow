@@ -15,7 +15,7 @@ An `Event` defines an event type and the shape of its payload.
 | Attribute | Type | Description |
 | --- | --- | --- |
 | `id` | `UUID` | Uniquely identifies the event. |
-| `name` | `str` | Names the event. |
+| `name` | `str` | Summarizes the event for display. |
 | `description` | `str` (optional) | Explains when the event is signaled and what it means. |
 | `payload` | [`JSONSchema`](WORKFLOW.md#jsonschema) | Defines the payload attributes and their types. Use the [empty-object schema](WORKFLOW.md#empty-object-schema) for an event with no payload. |
 
