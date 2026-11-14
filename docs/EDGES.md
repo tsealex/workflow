@@ -40,7 +40,7 @@ A `DecisionNode` has one edge per declared branch and one `default` edge. Execut
 
 ![An interruptible edge from a wait node inside a region to a step in the enclosing region](images/interruptible-edge.svg)
 
-An interruptible edge connects a child node to a child node in an enclosing region. Execution cancels the active paths and pending joins in each region it exits, then continues at the `to` node. A branch edge can also be interruptible.
+An interruptible edge connects a child node to a child node in an enclosing region. Execution cancels the active paths and pending joins in each region it exits, then continues at the `to` node. The engine marks affected unfinished node executions `INTERRUPTED` under the [executor interruption rules](EXECUTION.md#executor-interruption). A branch edge can also be interruptible.
 
 ## Edge patterns
 

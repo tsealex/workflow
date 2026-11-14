@@ -95,6 +95,7 @@ ExecutorMessage {
 
 ExecuteNodeRequest {
   node_xid: UUID
+  started_at: datetime
   node: Struct
   inputs: optional DataMap
 }
@@ -131,13 +132,14 @@ The lifecycle describes how a `WorkflowExecution` moves from creation to complet
 | `RUNNING` | Execution is active, including while awaiting dispatch, a timer, an event, or a join. |
 | `FAILED` | A node failed, ending the workflow. |
 | `SUSPENDED` | Execution is paused and can continue from its saved progress. |
+| `INTERRUPTED` | A node execution was terminated by interruption. The node visit is terminal and cannot resume. This status applies to node executions only. |
 | `COMPLETED` | The root region completed under the applicable iteration, join, and merge rules. |
 
-If a node fails, the engine marks that node and its workflow `FAILED` in the same transaction. It stops scheduling work for that workflow and interrupts its other running nodes. Results received after the workflow has failed cannot are ignored.
+If a node fails, the engine marks that node and its workflow `FAILED` in the same transaction. It stops scheduling work for that workflow and interrupts its other running nodes. Results received after the workflow has failed are ignored.
 
 A workflow remains `RUNNING` while any of its nodes is running. It becomes `SUSPENDED` when no nodes are running and none of its suspended nodes can be scheduled. Engine shutdown follows the [shutdown steps](#engine-shutdown).
 
-The engine creates executions in `RUNNING` and sets `started_at` at creation. It sets `ended_at` when an execution enters `FAILED` or `COMPLETED`. Waiting does not change the execution's status.
+The engine creates executions in `RUNNING` and sets `started_at` at creation. It sets `ended_at` when an execution enters `FAILED`, `COMPLETED`, or `INTERRUPTED`. Waiting does not change the execution's status.
 
 ## Persistence model
 
@@ -218,6 +220,10 @@ A normal shutdown saves unfinished work so execution can continue after restart.
 5. After all executors disconnect, the engine shuts down.
 
 ### Executor interruption
+
+When execution follows an interruptible edge, the engine marks the affected unfinished node executions in the exited regions `INTERRUPTED`, cancels their pending joins and waits, and records the edge's target execution position in one checkpoint transaction. After committing, the engine sends `InterruptNodeRequest` to executors running those nodes.
+
+The engine ignores results for `INTERRUPTED` node executions. Outputs committed before the interruption remain in workflow state.
 
 The executor handles interruption messages as follows:
 
