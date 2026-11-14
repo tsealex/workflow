@@ -102,7 +102,7 @@ class Executable(ABC):
         ...
 ```
 
-- Generate idempotent action `execute` implementations so that continuing an interrupted node with its saved inputs does not duplicate external side effects.
+- Generate idempotent action `execute` implementations so that resuming a suspended node with its saved inputs does not duplicate external side effects.
 - Pass the values selected by `input_states` to `execute` as a nested [DataMap](NODES.md#datamap).
 - Return a nested `DataMap` containing the values at the paths in `output_states` for an `ActionNode`. Return an empty `DataMap` when the list is empty.
 - A `DecisionNode` returns `{"branch": label}`, where `label` is a declared branch or `"default"`. The engine uses that label to select the outgoing edge.
