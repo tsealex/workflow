@@ -56,7 +56,7 @@ It maps to UML's `SendSignalAction`.
 
 ![UML accept event action shown as a notched pentagon and time wait shown as an hourglass](images/wait.svg)
 
-Pauses the current path for a duration, until a timestamp, or until a matching event instance arrives.
+Pauses execution along the current path for a specified duration, until a specified time, or until a matching event arrives.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
@@ -64,16 +64,16 @@ Pauses the current path for a duration, until a timestamp, or until a matching e
 | `type` | `str` | Always `wait`. |
 | `name` | `str` | Summarizes the node’s purpose for display. |
 | `duration` | `timedelta` (optional) | Sets the [duration](EVENTS.md#duration) to wait. |
-| `until` | `datetime` (optional) | Sets the [timestamp](EVENTS.md#timestamp) at which the path can resume. |
-| `event` | [EventSelector](#eventselector) (optional) | Selects the event instances that can resume the path. |
+| `until` | `datetime` (optional) | Sets the [timestamp](EVENTS.md#timestamp) at which execution can continue. |
+| `event` | [EventSelector](#eventselector) (optional) | Selects the event instances that end the wait. |
 
 Set exactly one of `duration`, `until`, or `event`.
 
-Duration and timestamp waits carry no payload. An event-based wait can write values from the matching `EventInstance` payload through its [state bindings](WORKFLOW.md#waitnode).
+Duration and timestamp waits receive no event payload. An event-based wait can write values from the matching `EventInstance` payload through its [state bindings](WORKFLOW.md#waitnode).
 
-Event eligibility begins when the workflow execution becomes active. A matching event committed while the workflow execution is active remains available when execution later reaches this `WaitNode`. See [Event delivery](EVENTS.md#event-delivery) for the shared delivery rules and open decisions.
+An event-based wait begins listening when its execution starts. See [Event delivery](EVENTS.md#event-delivery) for how matching events allow execution to continue.
 
-The serialized time formats remain to be defined.
+The formats used to serialize durations and timestamps remain to be defined.
 
 It maps to UML's `AcceptEventAction` with a `TimeEvent` or `SignalEvent` trigger.
 
@@ -81,7 +81,7 @@ It maps to UML's `AcceptEventAction` with a `TimeEvent` or `SignalEvent` trigger
 
 ![UML structured region with initial and final nodes, expansion region with collection pins, and interruptible region with a lightning-bolt edge](images/region.svg)
 
-Runs a nested graph and can repeat it once per item in a collection.
+Runs a nested graph and can repeat it once per item in a collection. `WorkflowEngine` exclusively handles region execution and processes collection items [sequentially](EXECUTION.md#region-execution).
 
 | Attribute | Type | Description |
 | --- | --- | --- |
@@ -91,11 +91,11 @@ Runs a nested graph and can repeat it once per item in a collection.
 | `nodes` | `list[Node]` | Contains the child node definitions. |
 | `edges` | [`list[Edge]`](EDGES.md#edge) | Contains the [edges](EDGES.md#edges) owned by the region. |
 
-Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. For a region reaching `final` completes the region unless the region iterates over a collection. When the root region completes, the workflow execution completes.
+Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. Reaching `final` completes the region unless it iterates over a collection. When the root region completes, the workflow execution completes.
 
-A child node's enclosing region is determined by membership in `RegionNode.nodes`. When loading a workflow revision, `WorkflowEngine` can derive a node ID to enclosing region ID lookup. The root region has no enclosing region.
+A node belongs to the region whose `nodes` list contains it. When loading a workflow revision, `WorkflowEngine` can build a lookup from each node ID to its enclosing region ID. The root region has no enclosing region.
 
-A region with the [`foreach_state` binding](WORKFLOW.md#regionnode) runs its graph from `initial` to `final` once per item in the collection. Reaching `final` completes that item's iteration. The region completes normally after all iterations finish. Edges that loop back to preceding nodes can coexist with `foreach_state` within the region. Each such loop stays within the current item's iteration until execution reaches `final`.
+A region with the [`collection_state` binding](WORKFLOW.md#regionnode) runs its graph from `initial` to `final` once per item in the collection. Reaching `final` completes that item's iteration. The region completes normally after all iterations finish. Cycles within the region repeat nodes for the current collection item. Reaching `final` ends that item's iteration.
 
 See [Interruptible edge](EDGES.md#interruptible-edge) for how an edge can exit a region before normal completion.
 
@@ -160,7 +160,7 @@ DataMap := {
 }
 ```
 
-A `DataMap` is a Python dictionary containing concrete values. When the input arrives as raw JSON text, parse it with `json.loads()` before validating the resulting value against its contract with `jsonschema`. A valid object is available to the caller as a dictionary.
+A `DataMap` is a Python dictionary containing concrete values. When the input arrives as raw JSON text, parse it with `json.loads()` before validating the resulting value against its contract with `jsonschema`. After validation, the caller uses the parsed dictionary.
 
 This `DataMap` matches the [`JSONSchema` example](WORKFLOW.md#jsonschema).
 

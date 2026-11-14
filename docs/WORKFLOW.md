@@ -1,6 +1,6 @@
 # Workflow
 
-A workflow embeds a root region and defines the states used by its nodes.
+A workflow contains a root region and defines the state available to its nodes.
 
 ## `Workflow`
 
@@ -13,7 +13,7 @@ A workflow embeds a root region and defines the states used by its nodes.
 | `name` | `str` (optional) | Names the workflow. |
 | `description` | `str` (optional) | Describes the workflow's purpose. |
 
-A workflow execution starts at the root region’s `initial` node and completes when the root region completes. Each workflow execution holds its own state values. See [Workflow execution](EXECUTION.md) for lifecycle and persistence.
+A workflow execution starts at the root region’s `initial` node and completes when the root region completes. Each workflow execution has its own state values. See [Workflow execution](EXECUTION.md) for lifecycle and persistence.
 
 Each node belongs to this workflow. Its saved changes are tracked by the workflow revision.
 
@@ -27,7 +27,7 @@ The following attributes extend node instances within a workflow, including node
 
 ### `ActionNode`
 
-Reads workflow states into its inputs and writes its outputs to workflow states.
+Reads selected workflow state values as inputs and writes its outputs back to workflow state.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ Reads workflow states into its inputs and writes its outputs to workflow states.
 
 ### `DecisionNode`
 
-Reads workflow states into its inputs and selects a branch.
+Reads selected workflow state values as inputs and selects a branch.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ The `branch` value returned by `execute` determines the [outgoing edge](EDGES.md
 
 ### `SignalNode`
 
-Reads workflow states to populate the event payload.
+Copies selected workflow state values into the event payload.
 
 See [Events](EVENTS.md) for how a `WaitNode` receives a matching event instance in the same workspace.
 
@@ -58,7 +58,7 @@ See [Events](EVENTS.md) for how a `WaitNode` receives a matching event instance 
 
 ### `WaitNode`
 
-When configured with `event`, writes received payload attributes to workflow states.
+When configured with `event`, copies selected values from the received payload into workflow state.
 
 | Attribute | Type | Description |
 | --- | --- | --- |
@@ -70,13 +70,23 @@ Reads a collection from workflow state and runs the region's graph from `initial
 
 | Attribute | Type | Description |
 | --- | --- | --- |
-| `foreach_state` | [str](#state-paths) (optional) | Specifies the workflow state path containing the collection to iterate over. Omit to run the region once. |
+| `collection_state` | [str](#state-paths) (optional) | Specifies the workflow state path containing the collection to iterate over. Omit to run the region once. |
+| `item_state` | `str` (optional) | Names the current item for child nodes to read. Required when `collection_state` is set. |
 
-For each item, execution starts at the region's `initial` node and completes that item's iteration at `final`. The region completes after all items finish. See [RegionNode](NODES.md#regionnode) for region execution semantics.
+For each iteration, `item_state` refers to that iteration's collection item. For example, `item_state: "order"` lets child nodes read `order.total` through `input_states`.
+
+Nodes in nested regions can also read the outer region's current item. An inner region can use `collection_state: "order.lines"` and `item_state: "line_item"`. Its child nodes can then read both `order.total` and `line_item.quantity`.
+
+- Reject an `item_state` that conflicts with a top-level workflow state name or an enclosing region's `item_state`.
+- Require `item_state` to be nonempty and contain no dots.
+- Derive the item's schema from the selected collection's item schema.
+- Treat the current item as a read-only input within its iteration.
+
+For each item, execution starts at the region's `initial` node and completes that item's iteration at `final`. The region completes after all items finish. See [Region execution](EXECUTION.md#region-execution) for sequential collection processing.
 
 ## Executable interface
 
-During compilation, the LLM uses the node’s `description` to generate a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution attempt. The validation harness calls `test_execute` during compilation.
+During compilation, the LLM uses the node’s `description` to generate a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution. The validation harness calls `test_execute` during compilation.
 
 ```python
 from abc import ABC, abstractmethod
@@ -92,12 +102,10 @@ class Executable(ABC):
         ...
 ```
 
-- The LLM should generate idempotent `execute` implementations where possible so that retrying the same node visit does not duplicate external side effects.
+- Generate idempotent action `execute` implementations so that continuing an interrupted node with its saved inputs does not duplicate external side effects.
 - Pass the values selected by `input_states` to `execute` as a nested [DataMap](NODES.md#datamap).
 - Return a nested `DataMap` containing the values at the paths in `output_states` for an `ActionNode`. Return an empty `DataMap` when the list is empty.
 - A `DecisionNode` returns `{"branch": label}`, where `label` is a declared branch or `"default"`. The engine uses that label to select the outgoing edge.
-- Validate each selected input against its schema in `Workflow.states` before calling `execute`.
-- Report the attempt as failed if input validation fails, `execute` raises an exception, or its return value fails the applicable output validation.
 
 ### Code validation
 
@@ -105,23 +113,24 @@ The generated `test_execute` calls `execute` with representative inputs and asse
 
 ## State paths
 
-Use a state name for a top-level field and a dotted path for a nested field. Each path must resolve to a property declared in `Workflow.states`. An empty list selects no values.
+Use a state name for a top-level field and a dotted path for a nested field. Read paths must resolve to a property declared in `Workflow.states` or the [current item](#regionnode) of the node's region or an enclosing region. Write paths must resolve to properties declared in `Workflow.states`. An empty list selects no values.
 
 For example, with `input_states: ["order.total"]`, the engine passes `{"order": {"total": 125.50}}` to `execute`. With `output_states: ["payment.approved"]`, the action returns `{"payment": {"approved": true}}` and the engine writes only `payment.approved`.
 
-- Derive the types for code generation from the selected paths in `Workflow.states`.
-- Fail the node attempt if a selected read or write value is missing.
-- Validate each state write against the subschema for its destination path before applying the attempt’s writes. Reject all writes from the attempt if validation fails.
-- Validate the payload assembled by a `SignalNode` against the event’s payload schema before signaling it.
+- Derive the types for code generation from the selected workflow state paths and collection item schemas.
 - Omit `output_states` on duration and timestamp waits.
 
-The ordering of concurrent writes to the same workflow state path remains to be defined.
+See [Node inputs and outputs](EXECUTION.md#node-inputs-and-outputs) for saved inputs, runtime validation, and the order in which outputs are applied.
 
 ## Workflow inputs
 
-Callers can supply initial values for any attribute declared in `Workflow.states`, including attributes that nodes may write later. Use data flow analysis to identify required launch inputs. If a read can be reached along an execution path with no prior setter for that state path, mark the attribute as required in `Workflow.states`. For a required nested input, require each property along its path in the corresponding object schema.
+Workflow inputs are the initial state values supplied when starting a workflow execution. Callers can supply values for any attribute declared in `Workflow.states`, including attributes that nodes may write later.
 
-Validate launch inputs against the root schema before initializing execution state. The policy for rechecking object-level constraints after state writes remains open.
+Use data flow analysis to identify required workflow inputs. If a node can read a state path before any node has written it, mark that attribute as required in `Workflow.states`. For a required nested input, require each property along its path in the corresponding object schema.
+
+Regions provide their current items during iteration, so callers do not supply values for `item_state` as workflow inputs.
+
+See [Workflow execution](EXECUTION.md#node-inputs-and-outputs) for input validation and state updates.
 
 ## `JSONSchema`
 

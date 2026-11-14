@@ -22,13 +22,13 @@ To enter a nested region, connect to its `RegionNode` in the enclosing region. E
 
 ### Implicit edge
 
-An implicit edge will be added when a path through a region connects to either `initial` or `final`. If the path ends at `final`, add an edge from `initial` to its first node. If the path starts at `initial` and its last node has no outgoing edge, add an edge from that node to `final`. All edges from a `DecisionNode` must be explicit.
+Add an implicit edge when a path through a region connects to either `initial` or `final`. If the path ends at `final`, add an edge from `initial` to its first node. If the path starts at `initial` and its last node has no outgoing edge, add an edge from that node to `final`. All edges from a `DecisionNode` must be explicit.
 
-For `Step A → Step B → final`, an implicit edge `initial → Step A` would be added.
+For `Step A → Step B → final`, add the implicit edge `initial → Step A`.
 
 ![Dashed arrow from initial to Step A, followed by solid arrows to Step B and final](images/implicit-edge.svg)
 
-After adding implicit edges, check paths in the direction of execution. A valid path starts at the region’s `initial` node and ends at its `final` node or with an interruptible edge. Disable nodes that lie on no valid path.
+After adding implicit edges, check paths in the direction of execution. A valid path starts at the region’s `initial` node and ends at its `final` node or with an interruptible edge. Disable nodes that are not on any valid path.
 
 ### Branch edge
 
@@ -62,11 +62,11 @@ A join waits for all paths from the same activation of a fork, then continues on
 
 ![UML merge node with two incoming edges and one outgoing edge](images/merge.svg)
 
-A merge continues when the selected path from its decision arrives.
+Execution continues through a merge when the selected decision branch reaches it.
 
 ## Example workflows
 
-These diagrams show execution patterns. A fork is represented by a non-decision node with multiple outgoing edges. A join or merge can be the convergence at a regular node or at a region's `final`. A filled circle marks `initial`, and a filled circle inside a ring marks `final`.
+These diagrams show execution patterns. A fork is represented by a non-decision node with multiple outgoing edges. Paths can join or merge at a regular node or at a region's `final`. A filled circle marks `initial`, and a filled circle inside a ring marks `final`.
 
 ### Nested forks and a decision
 
@@ -90,7 +90,7 @@ flowchart TD
     Result --> End
 ```
 
-`Record payment method check` is a merge. It runs when either `Check card` or `Check invoice` arrives, according to the selected branch. `Record payment checks` joins that merge's path with `Check address` from the same activation of `Start payment checks`. Its completion contributes one arrival to `Record all checks`, which also waits for `Check stock` from the same activation of `Start checks`. If this graph runs inside an iterating region, each iteration has its own fork activations.
+`Record payment method check` is a merge. It runs after the selected branch completes `Check card` or `Check invoice`. `Record payment checks` joins that merge's path with `Check address` from the same activation of `Start payment checks`. Its completion contributes one arrival to `Record all checks`, which also waits for `Check stock` from the same activation of `Start checks`. If this graph runs inside an iterating region, each iteration has its own fork activations.
 
 ### Cycle
 
@@ -136,4 +136,4 @@ flowchart LR
     Ship --> End
 ```
 
-Reject this decision because it lacks an explicit `default` edge. The validator cannot supply one as an implicit edge. A node that simply lies on no valid path is disabled under the [implicit edge rules](#implicit-edge).
+Reject this decision because it lacks an explicit `default` edge. The validator cannot supply one as an implicit edge. A node that is not on any valid path is disabled under the [implicit edge rules](#implicit-edge).

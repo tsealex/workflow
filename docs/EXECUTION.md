@@ -6,13 +6,13 @@
 
 ### `WorkflowEngine`
 
-`WorkflowEngine` orchestrates each `WorkflowExecution`. It determines which nodes should execute, manages timers and event waits, and dispatches node execution attempts. It owns the workflow’s shared `DataMap` and records progress as concurrent branches advance.
+`WorkflowEngine` orchestrates each `WorkflowExecution`. It determines which nodes should execute, manages timers and event waits, and dispatches node executions. It owns the workflow’s shared `DataMap` and records progress as concurrent branches advance.
 
 ### `WorkflowExecutor`
 
-`WorkflowExecutor` runs node execution attempts on a `Machine`. It registers with `WorkflowEngine`, runs the attempts the engine sends it, and reports their outcomes. The engine dispatches `ActionNode` and `DecisionNode` attempts to the executor, which calls their [Python entry point](WORKFLOW.md#executable-interface). The engine handles region traversal, commits signals, and resumes waits.
+`WorkflowExecutor` runs node executions on a `Machine`. It registers with `WorkflowEngine`, runs the nodes the engine dispatches, and reports their outcomes. The engine dispatches `ActionNode` and `DecisionNode` executions to the executor, which calls their [Python entry point](WORKFLOW.md#executable-interface). The engine exclusively handles region executions, processes collection items sequentially, commits signals, and advances execution when waits end.
 
-A `Machine` is a physical or virtual computer with its own execution environment, including installed software, environment variables, profiles, and secret references. Node execution attempts use the environment of their assigned machine.
+A `Machine` is a physical or virtual computer with its own execution environment, including installed software, environment variables, profiles, and secret references. Node executions use the environment of their assigned machine.
 
 Nodes within a workflow execution can share a machine or target different machines. The two default executor aliases are `local`, which resolves to the executor on the user’s machine, and `sandbox`, which resolves to the built-in sandbox executor.
 
@@ -21,11 +21,12 @@ Nodes within a workflow execution can share a machine or target different machin
 1. `WorkflowExecutor` is configured with the `WorkflowEngine` URL.
 2. On first startup, the executor calls `RegisterExecutor` over gRPC at that URL. The engine returns an executor ID and token, and the executor saves both.
 3. The executor opens a bidirectional `ConnectExecutor` call and sends its saved token in the gRPC call metadata.
-4. The engine records each attempt before sending it to the selected executor. It sends the next attempt to that executor only after committing the current attempt’s outcome.
-5. When the attempt finishes, the executor sends a `NodeExecutionResult` on the same call. The engine looks up the node execution, verifies that the authenticated executor is the one recorded for that attempt, and commits the checkpoint.
-6. If the connection closes, the executor opens a new `ConnectExecutor` call with its saved token. How the executor confirms that a result was committed and reconciles pending results after reconnecting remains open.
+4. The engine records the node execution before sending an `ExecuteNodeRequest` to the selected executor. It sends the next node to that executor only after committing the current node's result.
+5. The executor sends a `ExecuteNodeResponse` when the node finishes or stops in response to an interruption. The engine verifies that the sender is the assigned executor before committing the result.
+6. The engine can send an `InterruptNodeRequest` while a node is running. The executor must be able to receive and process this message during execution.
+7. The executor reconnects with its saved token after restart. A disconnect follows the [executor shutdown rules](#executor-shutdown).
 
-Only one attempt for a node visit may be in flight at a time. The engine dispatches a retry only after the previous attempt has definitively finished and can no longer return a result. This rule also applies during recovery after a disconnect.
+Only one execution of a given node visit may run at a time. A failed node visit and its workflow remain `FAILED`.
 
 ```mermaid
 sequenceDiagram
@@ -37,11 +38,15 @@ sequenceDiagram
         E-->>X: Executor ID and token
     end
     X->>E: ConnectExecutor with saved token
-    loop One attempt at a time
-        Note over E: Record the node execution attempt
-        E-->>X: NodeExecutionDispatch on the open stream
-        Note over X: Run the node execution attempt
-        X->>E: NodeExecutionResult on the open stream
+    loop One node at a time
+        Note over E: Record the node execution
+        E-->>X: ExecuteNodeRequest
+        Note over X: Run the node
+        opt Engine requests interruption
+            E-->>X: InterruptNodeRequest
+            Note over X: Stop the running node
+        end
+        X->>E: ExecuteNodeResponse
         Note over E: Commit the checkpoint
     end
     opt Stream closes
@@ -68,29 +73,54 @@ RegisterExecutorResponse {
 
 ###### `ConnectExecutor`
 
-The engine streams `NodeExecutionDispatch` messages with node definitions and their inputs. The executor streams `NodeExecutionResult` messages back over the same call. In both messages, `node_xid` identifies the `node_execution` row.
+The engine sends `EngineMessage` envelopes, and the executor sends `ExecutorMessage` envelopes. Each envelope contains one typed payload. `node_xid` identifies the `node_execution` row.
 
 ```protobuf
-rpc ConnectExecutor(stream NodeExecutionResult) returns (stream NodeExecutionDispatch)
+rpc ConnectExecutor(stream ExecutorMessage) returns (stream EngineMessage)
 
-NodeExecutionDispatch {
-  node_xid: UUID
-  node: Struct
-  inputs: DataMap
+EngineMessage {
+  oneof payload {
+    ExecuteNodeRequest execute_node
+    InterruptNodeRequest interrupt_node
+    EngineShutdown shutdown
+  }
 }
 
-NodeExecutionResult {
+ExecutorMessage {
+  oneof payload {
+    ExecuteNodeResponse node_result
+    ExecutorShutdown shutdown
+  }
+}
+
+ExecuteNodeRequest {
+  node_xid: UUID
+  node: Struct
+  inputs: optional DataMap
+}
+
+InterruptNodeRequest {
+  node_xid: UUID
+}
+
+ExecuteNodeResponse {
   node_xid: UUID
   status: ExecutionStatus
   outputs: optional DataMap
   started_at: datetime
   ended_at: datetime
 }
+
+EngineShutdown {}
+
+ExecutorShutdown {}
 ```
 
-The executor reports `COMPLETED` or `FAILED` for a finished attempt. In `NodeExecutionResult`, `started_at` and `ended_at` record when the executor started and finished the attempt.
+The executor reports `COMPLETED` when the node succeeds, `FAILED` when it encounters an unexpected error.
 
-Omit `outputs` for a failed attempt or when a completed node returns an empty `DataMap`. Otherwise, include the return value defined by the [executable interface](WORKFLOW.md#executable-interface).
+In `ExecuteNodeResponse`, `started_at` and `ended_at` record when the executor started and stopped running the node. A suspended result's `ended_at` records that stop and does not set the database row's terminal `ended_at`.
+
+Include `outputs` only for a completed node with a nonempty return value, as defined by the [executable interface](WORKFLOW.md#executable-interface).
 
 ## Lifecycle
 
@@ -98,13 +128,16 @@ The lifecycle describes how a `WorkflowExecution` moves from creation to complet
 
 | `ExecutionStatus` | Meaning |
 | --- | --- |
-| `READY` | The execution has been created and is ready for the engine to begin. |
-| `RUNNING` | The engine has begun and at least one path is active or can advance. |
-| `WAITING` | Every remaining path is blocked on a timer or event, directly or through a join. |
-| `FAILED` | An unrecoverable error ended the execution. |
+| `RUNNING` | Execution is active, including while awaiting dispatch, a timer, an event, or a join. |
+| `FAILED` | A node failed, ending the workflow. |
+| `SUSPENDED` | Execution is paused and can continue from its saved progress. |
 | `COMPLETED` | The root region completed under the applicable iteration, join, and merge rules. |
 
-Set `started_at` when creating the execution in `READY`. Set `ended_at` when it enters `FAILED` or `COMPLETED`. A timer or event can move a waiting execution back to `RUNNING`.
+If a node fails, the engine marks that node and its workflow `FAILED` in the same transaction. It stops scheduling work for that workflow and interrupts its other running nodes. Results received after the workflow has failed cannot are ignored.
+
+A workflow remains `RUNNING` while any of its nodes is running. It becomes `SUSPENDED` when no nodes are running and none of its suspended nodes can be scheduled. Engine shutdown follows the [shutdown steps](#engine-shutdown).
+
+The engine creates executions in `RUNNING` and sets `started_at` at creation. It sets `ended_at` when an execution enters `FAILED` or `COMPLETED`. Waiting does not change the execution's status.
 
 ## Persistence model
 
@@ -131,24 +164,80 @@ Set `started_at` when creating the execution in `READY`. Set `ended_at` when it 
 | `workflow_xid` | `UUID` | Foreign key to `workflow_execution.id`. |
 | `node_id` | `UUID` | Identifies the node in the workflow snapshot. |
 | `status` | `ExecutionStatus` | Stores the node execution status. |
-| `executor_id` | `UUID` (nullable) | Identifies the `WorkflowExecutor` assigned to the current attempt. |
-| `attempt_count` | `int` | Starts at zero before dispatch, becomes one on first dispatch, and increments on each retry. |
+| `inputs` | JSON (nullable) | Stores a fixed copy of the inputs saved before execution starts, including selected collection item values. Null until saved. An empty input object is stored as `{}`. Resuming a suspended visit uses these saved inputs. |
+| `executor_id` | `UUID` (nullable) | Identifies the `WorkflowExecutor` assigned to the node execution. |
 | `started_at` | `datetime` | Records when the node visit was created. |
-| `attempted_at` | `datetime` (nullable) | Records when the latest attempt began. |
 | `ended_at` | `datetime` (nullable) | Records when the node visit ended. |
 
-A loop or a later traversal to the same `node_id` creates a new row. A retry updates the existing row and keeps its `started_at`.
+Each node visit has its own row. This includes concurrent visits on fork branches and successive visits in collection iterations. A loop or a later traversal to the same `node_id` creates a new row. Resuming a suspended visit uses the existing row and preserves its `started_at`.
+
+## Region execution
+
+`WorkflowEngine` processes a region's collection one item at a time. For each item, execution begins at `initial`. The engine starts the next item only after execution for the current item reaches `final`. The region completes normally after every item finishes. Nested collection regions follow the same rule.
+
+An interruptible edge that exits the region ends its current iteration and prevents the remaining items from starting. Execution continues at the edge's target according to the [interruptible edge rules](EDGES.md#interruptible-edge).
+
+## Node inputs and outputs
+
+The engine validates workflow inputs against `Workflow.states` before initializing workflow state.
+
+### Input copies
+
+Before a node visit starts, the engine saves a copy of its selected inputs in [`node_execution.inputs`](#node_execution). This includes values selected from the current collection item or an enclosing region's current item.
+
+Each node visit has its own saved inputs, including visits that run concurrently. The node receives a copy of its saved inputs, including when execution continues from `SUSPENDED`. Later changes to workflow state do not change these inputs.
+
+### Output application
+
+The engine applies completed nodes' outputs one at a time, in the order it receives their completion results. The engine applies all outputs from each node together in the checkpoint transaction.
+
+When outputs overlap at the same state path, the output applied later takes precedence. For example, if two nodes output `payment.approved`, the result received second determines its final value. An output for `payment` also replaces its child values.
+
+### Runtime validation
+
+The engine validates inputs before execution, outputs before applying them, and signal payloads before committing events. Each value must match its state, item, or event schema.
+
+Missing values, validation errors, or execution exceptions fail the node and its workflow. The engine rejects all outputs from a failed node.
 
 ## Dispatch and checkpoints
 
-When a node becomes ready to run, `WorkflowEngine` creates a `node_execution` row in `READY`. Before dispatching the node to an executor, the engine updates that row to `RUNNING` and records `attempt_count` and the selected executor.
+When a node becomes eligible to run, `WorkflowEngine` creates a `node_execution` row in `RUNNING`. Before dispatch, it saves inputs according to [Node inputs and outputs](#node-inputs-and-outputs) and records the selected executor. During suspension, it records successors as `SUSPENDED` without starting them; their inputs remain null until they start.
 
-After each completed step, the engine records the node status, applies the node’s [state writes](WORKFLOW.md#node-state-bindings), records the next execution positions, and updates the parent status in one database transaction. A [Fork](EDGES.md#fork) creates its branch entry records in the same checkpoint. Concurrent branches can run independently. The engine serializes commits that update the same workflow execution and applies each accepted attempt’s state writes once.
+After each completed step, the engine records the node status, applies the node’s [state writes](WORKFLOW.md#node-state-bindings), records the next execution positions, and updates the parent status in one database transaction. A [Fork](EDGES.md#fork) creates its branch entry records in the same checkpoint. Concurrent branches can run independently. The engine serializes commits that update the same workflow execution and applies each completed node's state writes once.
 
-## Recovery and open decisions
+## Checkpoint and restart
 
-- Restore runnable node visits and workflow state from the last committed checkpoint. Recovery must preserve the [single-attempt rule](#protocol). The mechanisms for confirming committed results and reconciling pending results over the stream remain open, as does the policy for retrying actions with external side effects.
-- Derive each wait’s configuration from the snapshotted `WaitNode`. The engine still needs a durable way to preserve timer deadlines and event delivery progress across restarts. The representation remains open.
-- Keep join arrivals scoped to the same [Fork activation](EDGES.md#join). The representation for reconstructing activation membership and pending arrivals after a restart remains open, including for nested Forks and loops.
-- Define the ordering of concurrent writes to overlapping state paths in the [state binding spec](WORKFLOW.md#state-paths).
-- Defer persisted node results and workflow or node failure details.
+A normal shutdown saves unfinished work so execution can continue after restart. `WorkflowEngine` owns this process, including suspension of running nodes.
+
+### Engine shutdown
+
+1. Stop accepting new workflow executions and stop scheduling new nodes.
+2. Allow running nodes to finish and process their results during the configured shutdown grace period (1 minute by default).
+3. After grace period, mark all `RUNNING` workflows and node executions `SUSPENDED` in a database transaction. Ignore `ExecuteNodeResponse` received for suspended nodes.
+4. Send each executor `EngineShutdown` and close its connection without waiting for a response.
+5. After all executors disconnect, the engine shuts down.
+
+### Executor interruption
+
+The executor handles interruption messages as follows:
+
+- `InterruptNodeRequest`: Stop the node execution identified by `node_xid` if it is still running.
+- `EngineShutdown`: Stop all ongoing node executions.
+
+### Executor shutdown
+
+1. The executor stops all ongoing node executions.
+2. The executor sends `ExecutorShutdown` and shuts down without waiting for a response.
+3. On receiving `ExecutorShutdown`, the engine stops assigning work to that executor and marks its running nodes `SUSPENDED`.
+4. The engine tries to reschedule those nodes on eligible executors, respecting executor bindings.
+5. Whenever another node in an affected workflow completes, the engine checks its suspended nodes for scheduling again.
+6. The engine marks the workflow `SUSPENDED` only when no nodes are running and none can be scheduled.
+
+If the executor disconnects without sending `ExecutorShutdown`, the engine performs the same suspension and rescheduling steps when it detects the disconnection. 
+
+### Engine restart
+
+1. Mark workflows and node executions left in `RUNNING` as `SUSPENDED`.
+2. Schedule suspended nodes when eligible executors are available.
+3. Mark each resumed node and its workflow `RUNNING`.
+

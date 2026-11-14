@@ -1,14 +1,14 @@
 # Events
 
-Workflows use events to communicate that something happened. A `SignalNode` signals an `EventInstance` with the relevant payload values. A `WaitNode` in the same workspace can wait for a matching event instance and use its payload to resume the waiting path.
+Workflows use events to communicate that something happened. A `SignalNode` signals an `EventInstance` with the relevant payload values. A `WaitNode` in the same workspace waits for a matching event instance. When one arrives, execution continues with the received payload.
 
-For example, the `review_completed` event declares an order ID and an approval result. When a review finishes, the review workflow signals the event with those values. The fulfillment workflow waiting for that order uses the approval result to decide whether to ship it.
+For example, the `review_completed` event declares an order ID and an approval result. When a review finishes, the review workflow signals the event with those values. The fulfillment workflow waits for a review result for that order, then uses the approval result to decide whether to ship it.
 
 ## Event delivery
 
-`WorkflowEngine` commits the event instance when a `SignalNode` runs. An event instance is eligible for a workflow execution if that execution was active before the signal was committed. Preserve eligible event instances so that a matching `WaitNode` can receive them when execution reaches it, including events committed before the node starts waiting. The same event instance can resume multiple matching waits in the workspace.
+An event-based `WaitNode` begins waiting when its execution starts. If an event instance matches the node's selector and is committed while the node is waiting, the wait ends and execution continues. The same event instance can satisfy multiple matching waits in the workspace.
 
-The exact lifecycle boundary for becoming active and the consumption policy for repeated visits to a matching wait remain open.
+Canceling the node execution also ends the wait. Each visit to the node waits for events committed after that visit begins waiting.
 
 ## `Event`
 
@@ -37,8 +37,8 @@ An `EventInstance` represents one occurrence of an `Event`. It references the ev
 
 ### Duration
 
-A `WaitNode` with `duration` resumes its path after the specified interval elapses from the start of the wait.
+A `WaitNode` with `duration` waits for the specified interval, measured from when the wait begins. Execution then continues.
 
 ### Timestamp
 
-A `WaitNode` with `until` resumes its path when the specified timestamp is reached. If the timestamp has already passed when the wait starts, the path can resume immediately.
+A `WaitNode` with `until` waits until the specified time, then execution continues. If that time has already passed when the node starts, execution can continue immediately.
