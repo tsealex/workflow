@@ -71,6 +71,8 @@ Set exactly one of `duration`, `until`, or `event`.
 
 Duration and timestamp waits carry no payload. An event-based wait can write values from the matching `EventInstance` payload through its [state bindings](WORKFLOW.md#waitnode).
 
+Event eligibility begins when the workflow execution becomes active. A matching event committed while the workflow execution is active remains available when execution later reaches this `WaitNode`. See [Event delivery](EVENTS.md#event-delivery) for the shared delivery rules and open decisions.
+
 The serialized time formats remain to be defined.
 
 It maps to UML's `AcceptEventAction` with a `TimeEvent` or `SignalEvent` trigger.
@@ -88,13 +90,12 @@ Runs a nested graph and can repeat it once per item in a collection.
 | `name` | `str` | Summarizes the node’s purpose for display. |
 | `nodes` | `list[Node]` | Contains the child node definitions. |
 | `edges` | [`list[Edge]`](EDGES.md#edge) | Contains the [edges](EDGES.md#edges) owned by the region. |
-| `iteration` | `str` (optional) | Specifies the workflow state name or path containing the collection to iterate over. |
 
-Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. For a region without iteration, reaching `final` completes the region. When the root region completes, the workflow execution completes.
+Each region has a built-in `initial` node for entry and a `final` node for completion. Each has its own UUID. For a region reaching `final` completes the region unless the region iterates over a collection. When the root region completes, the workflow execution completes.
 
 A child node's enclosing region is determined by membership in `RegionNode.nodes`. When loading a workflow revision, `WorkflowEngine` can derive a node ID to enclosing region ID lookup. The root region has no enclosing region.
 
-An iterating region runs from `initial` to `final` once per item. Reaching `final` completes that iteration. The region completes normally after all iterations finish.
+A region with the [`foreach_state` binding](WORKFLOW.md#regionnode) runs its graph from `initial` to `final` once per item in the collection. Reaching `final` completes that item's iteration. The region completes normally after all iterations finish. Edges that loop back to preceding nodes can coexist with `foreach_state` within the region. Each such loop stays within the current item's iteration until execution reaches `final`.
 
 See [Interruptible edge](EDGES.md#interruptible-edge) for how an edge can exit a region before normal completion.
 

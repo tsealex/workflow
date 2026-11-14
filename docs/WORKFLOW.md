@@ -64,6 +64,16 @@ When configured with `event`, writes received payload attributes to workflow sta
 | --- | --- | --- |
 | `output_states` | [list[str]](#state-paths) (optional) | Lists workflow state paths to write from the same paths in the received payload. |
 
+### `RegionNode`
+
+Reads a collection from workflow state and runs the region's graph from `initial` to `final` once per item.
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `foreach_state` | [str](#state-paths) (optional) | Specifies the workflow state path containing the collection to iterate over. Omit to run the region once. |
+
+For each item, execution starts at the region's `initial` node and completes that item's iteration at `final`. The region completes after all items finish. See [RegionNode](NODES.md#regionnode) for region execution semantics.
+
 ## Executable interface
 
 During compilation, the LLM uses the node’s `description` to generate a concrete Python subclass of `Executable` with both methods below. The workflow stores the generated class in the node’s `code` field. `WorkflowExecutor` calls `execute` for each `ActionNode` or `DecisionNode` execution attempt. The validation harness calls `test_execute` during compilation.

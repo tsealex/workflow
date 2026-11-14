@@ -92,6 +92,21 @@ flowchart TD
 
 `Record payment method check` is a merge. It runs when either `Check card` or `Check invoice` arrives, according to the selected branch. `Record payment checks` joins that merge's path with `Check address` from the same activation of `Start payment checks`. Its completion contributes one arrival to `Record all checks`, which also waits for `Check stock` from the same activation of `Start checks`. If this graph runs inside an iterating region, each iteration has its own fork activations.
 
+### Cycle
+
+An edge back to a preceding node repeats part of the workflow graph.
+
+```mermaid
+flowchart TD
+    Prepare[Prepare order] --> Check[Check order]
+    Check --> Decide{Needs revision?}
+    Decide -->|revise| Revise[Revise order]
+    Revise --> Check
+    Decide -->|default| Submit[Submit order]
+```
+
+The `revise` branch runs `Revise order` and returns to `Check order`. Each traversal creates a new [node visit](EXECUTION.md#node_execution). The `default` branch exits the loop and continues to `Submit order`. The incoming edges at `Check order` allow entry on the first traversal and re-entry on each loop traversal.
+
 ### Invalid edge into a nested region
 
 ```mermaid

@@ -25,6 +25,8 @@ Nodes within a workflow execution can share a machine or target different machin
 5. When the attempt finishes, the executor sends a `NodeExecutionResult` on the same call. The engine looks up the node execution, verifies that the authenticated executor is the one recorded for that attempt, and commits the checkpoint.
 6. If the connection closes, the executor opens a new `ConnectExecutor` call with its saved token. How the executor confirms that a result was committed and reconciles pending results after reconnecting remains open.
 
+Only one attempt for a node visit may be in flight at a time. The engine dispatches a retry only after the previous attempt has definitively finished and can no longer return a result. This rule also applies during recovery after a disconnect.
+
 ```mermaid
 sequenceDiagram
     participant X as WorkflowExecutor
@@ -145,7 +147,7 @@ After each completed step, the engine records the node status, applies the node�
 
 ## Recovery and open decisions
 
-- Restore runnable node visits and workflow state from the last committed checkpoint. The policy for recovering in-flight executor work remains open, including how to confirm committed results over the stream, how to distinguish a replayed result from a later attempt’s result, and when an action with external side effects can be retried.
+- Restore runnable node visits and workflow state from the last committed checkpoint. Recovery must preserve the [single-attempt rule](#protocol). The mechanisms for confirming committed results and reconciling pending results over the stream remain open, as does the policy for retrying actions with external side effects.
 - Derive each wait’s configuration from the snapshotted `WaitNode`. The engine still needs a durable way to preserve timer deadlines and event delivery progress across restarts. The representation remains open.
 - Keep join arrivals scoped to the same [Fork activation](EDGES.md#join). The representation for reconstructing activation membership and pending arrivals after a restart remains open, including for nested Forks and loops.
 - Define the ordering of concurrent writes to overlapping state paths in the [state binding spec](WORKFLOW.md#state-paths).

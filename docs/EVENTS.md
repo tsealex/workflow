@@ -6,7 +6,9 @@ For example, the `review_completed` event declares an order ID and an approval r
 
 ## Event delivery
 
-`WorkflowEngine` commits the event instance when a `SignalNode` runs. An event instance can resume a matching `WaitNode` only if the wait was active before the signal was committed. The same event instance can resume multiple matching waits in the workspace.
+`WorkflowEngine` commits the event instance when a `SignalNode` runs. An event instance is eligible for a workflow execution if that execution was active before the signal was committed. Preserve eligible event instances so that a matching `WaitNode` can receive them when execution reaches it, including events committed before the node starts waiting. The same event instance can resume multiple matching waits in the workspace.
+
+The exact lifecycle boundary for becoming active and the consumption policy for repeated visits to a matching wait remain open.
 
 ## `Event`
 
