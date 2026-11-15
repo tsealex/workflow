@@ -19,6 +19,7 @@
 
 - Keep responses concise and apply the user's corrections consistently in later work.
 - Delegate all code changes to the `implementer` agent.
+- Always generate migrations with Alembic's built-in commands and edit generated files only when necessary.
 - For code requests, do not edit documentation `.md` files.
 - For docs/specs requests, do not edit code without a separate instruction.
 - Report conflicts and await the user's final decision before editing.
