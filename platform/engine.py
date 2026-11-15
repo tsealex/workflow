@@ -104,6 +104,10 @@ class NodeExecution(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# SQLAlchemy reserves the metadata name during declarative class setup.
+NodeExecution.metadata = mapped_column(JSON(none_as_null=True), nullable=True)
+
+
 class WorkflowExecutorRegistration(Base):
     """Store an executor identity and the hash of its token."""
 

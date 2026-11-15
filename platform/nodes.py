@@ -156,6 +156,16 @@ class _RegionBoundary(BaseModel):
     id: UUID = Field(default_factory=uuid4)
 
 
+class ExecMetadata(BaseModel):
+    """Store the data needed to resume a node execution."""
+
+
+class RegionExecMetadata(ExecMetadata):
+    """Store the index of the current collection item for a region visit."""
+
+    item_idx: int = Field(ge=0, strict=True)
+
+
 class RegionNode(BaseNode):
     nodes: list[Node]
     edges: list[Edge]
