@@ -15,7 +15,7 @@ A workflow contains a root region and defines the state available to its nodes.
 
 A workflow execution starts at the root region’s `initial` node and completes when the root region completes. Each workflow execution has its own state values. See [Workflow execution](EXECUTION.md) for lifecycle and persistence.
 
-Each node belongs to this workflow. Its saved changes are tracked by the workflow revision.
+Each node belongs to this workflow. Its saved changes are tracked by the workflow revision. Executions share a [WorkflowSnapshot](EXECUTION.md#workflow_snapshot) of that revision.
 
 ## Edges
 
@@ -77,10 +77,7 @@ For each iteration, `item_state` refers to that iteration's collection item. For
 
 Nodes in nested regions can also read the outer region's current item. An inner region can use `collection_state: "order.lines"` and `item_state: "line_item"`. Its child nodes can then read both `order.total` and `line_item.quantity`.
 
-- Reject an `item_state` that conflicts with a top-level workflow state name or an enclosing region's `item_state`.
-- Require `item_state` to be nonempty and contain no dots.
-- Derive the item's schema from the selected collection's item schema.
-- Treat the current item as a read-only input within its iteration.
+The innermost scope overrides parent states with the same name. An `item_state` must be nonempty and contain no dots. The current item is read-only and uses the collection's item schema.
 
 For each item, execution starts at the region's `initial` node and completes that item's iteration at `final`. The region completes after all items finish. See [Region execution](EXECUTION.md#region-execution) for sequential collection processing.
 

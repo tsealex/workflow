@@ -1,6 +1,6 @@
 # Workflow execution
 
-`WorkflowEngine` runs a saved [workflow revision](WORKFLOW.md#workflow) and checkpoints its progress in the database. The [node](NODES.md) and [edge](EDGES.md) specs define how execution moves through the graph.
+`WorkflowEngine` runs a saved [WorkflowSnapshot](#workflow_snapshot) and checkpoints its progress in the database. The [node](NODES.md) and [edge](EDGES.md) specs define how execution moves through the graph.
 
 ## Components
 
@@ -145,14 +145,31 @@ The engine creates executions in `RUNNING` and sets `started_at` at creation. It
 
 `WorkflowEngine` stores workflow executions and their node executions in the database using the tables below.
 
+Each execution identifies its shared [WorkflowSnapshot](#workflow_snapshot) by `workflow_id` and `workflow_revision`.
+
+### `workflow_snapshot`
+
+The `workflow_snapshot` table stores a shared, immutable graph and state schema per revision, avoiding duplicate storage and preserving execution behavior across edits and restarts.
+
+When starting a workflow execution, `WorkflowEngine` creates a snapshot of the current revision if one does not already exist.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `workflow_id` | `UUID` | Identifies the workflow and forms the composite primary key with `revision`. |
+| `revision` | `int` | Identifies the saved workflow revision. |
+| `root` | JSON | Stores the serialized [RegionNode](NODES.md#regionnode). |
+| `states` | [JSONSchema](WORKFLOW.md#jsonschema) | Stores the workflow state schema as JSON. |
+| `ref_count` | `int` | Counts unfinished workflow executions using the snapshot. |
+
+Each `RUNNING` or `SUSPENDED` execution holds one reference. The engine increments `ref_count` at execution creation and decrements it once on `COMPLETED` or `FAILED`. Periodic cleanup deletes snapshots with `ref_count = 0`, removing their historical graph and schema.
+
 ### `workflow_execution`
 
 | Column | Type | Description |
 | --- | --- | --- |
 | `id` | `UUID` | Primary key for the `WorkflowExecution`. |
 | `workflow_id` | `UUID` | Identifies the source workflow. |
-| `workflow_revision` | `int` | Identifies the saved revision. |
-| `workflow_snapshot` | JSON | Stores an immutable copy of the `Workflow` used by the execution. |
+| `workflow_revision` | `int` | Identifies the shared snapshot's `revision` together with `workflow_id`. |
 | `status` | `ExecutionStatus` | Stores the workflow execution status. |
 | `started_at` | `datetime` | Records when the execution was created. |
 | `ended_at` | `datetime` (nullable) | Records when the execution ended. |

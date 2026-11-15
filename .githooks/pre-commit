@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+
+import os
+import shutil
+import subprocess
+import sys
+
+
+def main():
+    staged_paths = subprocess.check_output(
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=ACMR",
+            "-z",
+            "--",
+            "platform/",
+        ]
+    )
+    python_paths = [
+        os.fsdecode(path)
+        for path in staged_paths.split(b"\0")
+        if path.endswith((b".py", b".pyi"))
+    ]
+    if not python_paths:
+        return 0
+
+    black = shutil.which("black")
+    if black is None:
+        print(
+            "Black is required. Run: python3 -m pip install -r platform/requirements.txt",
+            file=sys.stderr,
+        )
+        return 1
+
+    failed = False
+    for path in python_paths:
+        source = subprocess.check_output(["git", "show", f":{path}"])
+        result = subprocess.run(
+            [black, "--check", "--stdin-filename", path, "-"], input=source
+        )
+        failed |= result.returncode != 0
+
+    if failed:
+        print(
+            "Run Black on the affected files and stage them again.",
+            file=sys.stderr,
+        )
+    return int(failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
