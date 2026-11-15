@@ -5,10 +5,9 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
+from alembic_utils.replaceable_entity import register_entities
 
-from database import Base
-import engine
-import workflow
+from models import Base, snapshot_ref_count_function, snapshot_ref_count_trigger
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -21,8 +20,8 @@ if database_url := os.environ.get("DATABASE_URL"):
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Import model modules above to register their tables before comparison.
 target_metadata = Base.metadata
+register_entities([snapshot_ref_count_function, snapshot_ref_count_trigger])
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

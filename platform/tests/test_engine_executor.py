@@ -6,21 +6,21 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import grpc
 from pydantic import ValidationError
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import execution_pb2 as messages
-from database import Base
-from engine import WorkflowEngine, WorkflowExecutorRegistration
+from engine import WorkflowEngine
 from execution_pb2_grpc import (
     WorkflowEngineStub,
     add_WorkflowEngineServicer_to_server,
 )
 from executors import WorkflowExecutor
+from models import Base, WorkflowExecutorRegistration
 from nodes import ActionNode, DecisionNode, SignalNode
 
 
@@ -51,7 +51,7 @@ class RecordingExecutor(WorkflowExecutor):
         self.finish = asyncio.Queue()
         self.stopped = asyncio.Event()
 
-    async def execute_node(self, request):
+    async def execute_node(self, request, inputs=None):
         await self.dispatched.put(request)
         try:
             result = await self.finish.get()
@@ -67,10 +67,13 @@ class EngineExecutorTest(unittest.IsolatedAsyncioTestCase):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name)
-        self.database = create_engine(f"sqlite:///{self.home / 'workflow.db'}")
-        self.addCleanup(self.database.dispose)
-        Base.metadata.create_all(self.database)
-        self.sessions = sessionmaker(self.database)
+        self.database = create_async_engine(
+            f"sqlite+aiosqlite:///{self.home / 'workflow.db'}"
+        )
+        self.addAsyncCleanup(self.database.dispose)
+        async with self.database.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        self.sessions = async_sessionmaker(self.database)
         self.keys = {}
         native_keyring = Mock()
         native_keyring.get_password.side_effect = (
@@ -91,6 +94,7 @@ class EngineExecutorTest(unittest.IsolatedAsyncioTestCase):
 
     async def start_engine(self):
         self.engine = RecordingEngine(self.sessions)
+        await self.engine.start()
         self.server = grpc.aio.server()
         add_WorkflowEngineServicer_to_server(self.engine, self.server)
         port = self.server.add_insecure_port("127.0.0.1:0")
@@ -205,17 +209,14 @@ class Choose(Executable):
             executor_id = self.registration.executor_id
             self.engine.allow_commit.clear()
             request = self.new_request(inputs=b'{"amount": 9007199254740993}')
-            attempt_id = self.engine.execute_node(executor_id, request)
+            self.engine.execute_node(executor_id, request)
             dispatched = await self.executor.dispatched.get()
-            self.assertEqual(dispatched.attempt_id, attempt_id)
-            self.assertEqual(dispatched.inputs, request.inputs)
-            self.assertEqual(request.attempt_id, "")
+            self.assertEqual(dispatched, request)
             await self.executor.finish.put({"amount": 9007199254740993})
 
             result = await self.engine.results.get()
             self.assertEqual(result.status, messages.COMPLETED)
             self.assertEqual(result.node_xid, request.node_xid)
-            self.assertEqual(result.attempt_id, attempt_id)
             self.assertEqual(
                 json.loads(result.outputs), {"amount": 9007199254740993}
             )
@@ -241,14 +242,14 @@ class Choose(Executable):
 
             self.engine.execute_node(executor_id, request)
             await self.executor.dispatched.get()
-            self.engine.interrupt_node(executor_id, request.node_xid)
+            self.engine.interrupt_node(executor_id, UUID(request.node_xid))
             result = await self.engine.results.get()
             self.assertEqual(result.status, messages.INTERRUPTED)
             self.assertFalse(result.HasField("outputs"))
             self.assertTrue(self.executor.stopped.is_set())
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, request)
+            self.engine.execute_node(executor_id, self.new_request())
             await self.executor.dispatched.get()
             with self.assertLogs("executors", level="ERROR"):
                 await self.executor.finish.put(RuntimeError("fixture failure"))
@@ -257,7 +258,7 @@ class Choose(Executable):
                 )
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, request)
+            self.engine.execute_node(executor_id, self.new_request())
             await self.executor.dispatched.get()
             with self.assertLogs("executors", level="ERROR"):
                 await self.executor.finish.put([])
@@ -266,7 +267,7 @@ class Choose(Executable):
                 )
             await self.engine.available.get()
 
-            request.inputs = b'{"nested": [1e400]}'
+            request = self.new_request(inputs=b'{"nested": [1e400]}')
             self.engine.execute_node(executor_id, request)
             with self.assertLogs("executors", level="ERROR"):
                 self.assertEqual(
@@ -282,42 +283,51 @@ class Choose(Executable):
         async with asyncio.timeout(5):
             stub = WorkflowEngineStub(self.channel)
             with self.assertRaises(grpc.aio.AioRpcError) as unauthorized:
-                await stub.ConnectExecutor().read()
+                await stub.connect_executor().read()
             self.assertEqual(
                 unauthorized.exception.code(), grpc.StatusCode.UNAUTHENTICATED
             )
 
-            call = stub.ConnectExecutor(
+            call = stub.connect_executor(
                 metadata=(
                     ("authorization", f"Bearer {self.registration.token}"),
                 )
             )
             executor_id = await self.engine.available.get()
             request = self.new_request()
+            visit_id = UUID(request.node_xid)
+            request.node_xid = visit_id.hex.upper()
             self.engine.execute_node(executor_id, request)
             first = (await call.read()).execute_node
+            self.assertEqual(first.node_xid, str(visit_id))
+            await call.write(
+                messages.ExecutorMessage(
+                    node_result=messages.ExecuteNodeResponse(
+                        node_xid="not a UUID", status=messages.COMPLETED
+                    )
+                )
+            )
             suspended = messages.ExecuteNodeResponse(
-                node_xid=first.node_xid,
-                attempt_id=first.attempt_id,
+                node_xid=visit_id.hex.upper(),
                 status=messages.SUSPENDED,
             )
             suspended.started_at.CopyFrom(first.started_at)
             suspended.ended_at.FromDatetime(datetime.now(UTC))
             await call.write(messages.ExecutorMessage(node_result=suspended))
+            suspended.node_xid = str(visit_id)
             self.assertEqual(await self.engine.results.get(), suspended)
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, request)
-            retry = (await call.read()).execute_node
-            self.assertNotEqual(retry.attempt_id, first.attempt_id)
+            self.engine.execute_node(executor_id, self.new_request())
+            second = (await call.read()).execute_node
+            self.assertNotEqual(second.node_xid, first.node_xid)
             await call.write(messages.ExecutorMessage(node_result=suspended))
             invalid = messages.ExecuteNodeResponse(
-                node_xid=retry.node_xid,
-                attempt_id=retry.attempt_id,
+                node_xid=second.node_xid,
                 status=messages.COMPLETED,
                 outputs=b'{"nested": [1e400]}',
             )
-            invalid.started_at.CopyFrom(retry.started_at)
+            invalid.started_at.CopyFrom(second.started_at)
             invalid.ended_at.FromDatetime(datetime.now(UTC))
             await call.write(messages.ExecutorMessage(node_result=invalid))
 
@@ -349,23 +359,25 @@ class Choose(Executable):
                 self.registration.token.encode(), original_ciphertext
             )
             self.assertNotIn(
-                self.registration.executor_id.encode(), original_ciphertext
+                str(self.registration.executor_id).encode(), original_ciphertext
             )
             self.assertEqual(credential_file.stat().st_mode & 0o777, 0o600)
 
-            def read_registration():
-                with self.sessions() as session:
-                    return session.scalar(select(WorkflowExecutorRegistration))
+            async def read_registration():
+                async with self.sessions() as session:
+                    return await session.scalar(
+                        select(WorkflowExecutorRegistration)
+                    )
 
-            original = read_registration()
-            self.assertEqual(str(original.id), self.registration.executor_id)
+            original = await read_registration()
+            self.assertEqual(original.id, self.registration.executor_id)
             self.assertEqual(
                 original.token_hash,
                 sha256(self.registration.token.encode()).hexdigest(),
             )
             self.assertIsNone(original.last_connected_at)
             task = await self.connect_executor()
-            first_connection = read_registration().last_connected_at
+            first_connection = (await read_registration()).last_connected_at
             self.assertIsNotNone(first_connection)
             self.executor.shutdown()
             await task
@@ -374,7 +386,7 @@ class Choose(Executable):
 
             await self.start_engine()
             task = await self.connect_executor()
-            recovered = read_registration()
+            recovered = await read_registration()
             self.assertEqual(recovered.id, original.id)
             self.assertEqual(recovered.created_at, original.created_at)
             self.assertGreater(recovered.last_connected_at, first_connection)
@@ -389,7 +401,9 @@ class Choose(Executable):
             token = self.registration.token
             for request, status in (
                 (
-                    messages.RegisterExecutorRequest(executor_id=executor_id),
+                    messages.RegisterExecutorRequest(
+                        executor_id=str(executor_id)
+                    ),
                     grpc.StatusCode.INVALID_ARGUMENT,
                 ),
                 (
@@ -398,41 +412,50 @@ class Choose(Executable):
                 ),
                 (
                     messages.RegisterExecutorRequest(
-                        executor_id=executor_id, token="bad"
+                        executor_id="not a UUID", token=token
+                    ),
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                ),
+                (
+                    messages.RegisterExecutorRequest(
+                        executor_id=str(executor_id), token="bad"
                     ),
                     grpc.StatusCode.UNAUTHENTICATED,
                 ),
             ):
                 with self.assertRaises(grpc.aio.AioRpcError) as rejected:
-                    await stub.RegisterExecutor(request)
+                    await stub.register_executor(request)
                 self.assertEqual(rejected.exception.code(), status)
 
             credentials = messages.RegisterExecutorRequest(
-                executor_id=executor_id, token=token
+                executor_id=str(executor_id), token=token
             )
             self.assertEqual(
-                await stub.RegisterExecutor(credentials), self.registration
+                await stub.register_executor(credentials),
+                messages.RegisterExecutorResponse(
+                    executor_id=str(executor_id), token=token
+                ),
             )
             task = await self.connect_executor()
-            with self.sessions() as session:
-                connected_at = session.scalar(
+            async with self.sessions() as session:
+                connected_at = await session.scalar(
                     select(WorkflowExecutorRegistration.last_connected_at)
                 )
             with self.assertRaises(grpc.aio.AioRpcError) as registration:
-                await stub.RegisterExecutor(credentials)
+                await stub.register_executor(credentials)
             self.assertEqual(
                 registration.exception.code(), grpc.StatusCode.ALREADY_EXISTS
             )
             with self.assertRaises(grpc.aio.AioRpcError) as stream:
-                await stub.ConnectExecutor(
+                await stub.connect_executor(
                     metadata=(("authorization", f"Bearer {token}"),)
                 ).read()
             self.assertEqual(
                 stream.exception.code(), grpc.StatusCode.ALREADY_EXISTS
             )
-            with self.sessions() as session:
+            async with self.sessions() as session:
                 self.assertEqual(
-                    session.scalar(
+                    await session.scalar(
                         select(WorkflowExecutorRegistration.last_connected_at)
                     ),
                     connected_at,
@@ -459,9 +482,9 @@ class Choose(Executable):
             ):
                 await self.executor.register()
             self.assertEqual(path.read_bytes(), b"corrupt test fixture")
-            with self.sessions() as session:
+            async with self.sessions() as session:
                 self.assertEqual(
-                    session.scalar(
+                    await session.scalar(
                         select(func.count()).select_from(
                             WorkflowExecutorRegistration
                         )

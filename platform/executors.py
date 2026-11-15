@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TypeVar
+from uuid import UUID
 
 import grpc
 import keyring
@@ -38,6 +39,14 @@ _SYSTEM_KEYRINGS = {
 }
 
 
+@dataclass(frozen=True)
+class ExecutorCredentials:
+    """Store the executor ID and token used to authenticate with the engine."""
+
+    executor_id: UUID
+    token: str
+
+
 def _get_system_keyring() -> KeyringBackend:
     backend = keyring.get_keyring()
     candidates = (
@@ -51,7 +60,7 @@ def _get_system_keyring() -> KeyringBackend:
 
 def _load_executor_credentials(
     path: Path,
-) -> tuple[Fernet, messages.RegisterExecutorResponse | None]:
+) -> tuple[Fernet, ExecutorCredentials | None]:
     """Load credentials, or prepare an encryption key for first registration."""
     try:
         encrypted = path.read_bytes()
@@ -71,26 +80,30 @@ def _load_executor_credentials(
         cipher = Fernet(key.encode("ascii"))
         if encrypted is None:
             return cipher, None
-        credentials = messages.RegisterExecutorResponse.FromString(
+        response = messages.RegisterExecutorResponse.FromString(
             cipher.decrypt(encrypted)
+        )
+        if not response.executor_id or not response.token:
+            raise RuntimeError("The executor credential file is incomplete.")
+        credentials = ExecutorCredentials(
+            UUID(response.executor_id), response.token
         )
     except (ValueError, InvalidToken, DecodeError) as error:
         raise RuntimeError(
             "Cannot read the executor credential file."
         ) from error
 
-    if not credentials.executor_id or not credentials.token:
-        raise RuntimeError("The executor credential file is incomplete.")
     return cipher, credentials
 
 
 def _save_executor_credentials(
-    path: Path, cipher: Fernet, credentials: messages.RegisterExecutorResponse
+    path: Path, cipher: Fernet, credentials: ExecutorCredentials
 ) -> None:
     """Write credentials atomically with access limited to the local user."""
-    if not credentials.executor_id or not credentials.token:
-        raise ValueError("Cannot save incomplete executor credentials.")
-    encrypted = cipher.encrypt(credentials.SerializeToString())
+    response = messages.RegisterExecutorResponse(
+        executor_id=str(credentials.executor_id), token=credentials.token
+    )
+    encrypted = cipher.encrypt(response.SerializeToString())
     with NamedTemporaryFile(dir=path.parent, delete=False) as file:
         temporary_path = Path(file.name)
         try:
@@ -157,7 +170,7 @@ class WorkflowExecutor:
             Path.home() / ".workflow" / "executor.credentials"
         )
 
-    async def register(self) -> messages.RegisterExecutorResponse:
+    async def register(self) -> ExecutorCredentials:
         """Reuse saved credentials or register and encrypt new credentials."""
         path = self._credentials_path
         await asyncio.to_thread(
@@ -171,9 +184,16 @@ class WorkflowExecutor:
             )
             request = messages.RegisterExecutorRequest()
             if saved is not None:
-                request.executor_id = saved.executor_id
+                request.executor_id = str(saved.executor_id)
                 request.token = saved.token
-            registration = await self._engine.RegisterExecutor(request)
+            response = await self._engine.register_executor(request)
+            if not response.executor_id or not response.token:
+                raise ValueError(
+                    "The engine returned incomplete executor credentials."
+                )
+            registration = ExecutorCredentials(
+                UUID(response.executor_id), response.token
+            )
             if saved is None:
                 await _complete_credential_io(
                     _save_executor_credentials, path, cipher, registration
@@ -197,10 +217,8 @@ class WorkflowExecutor:
         finally:
             self._running = False
 
-    async def _run(
-        self, registration: messages.RegisterExecutorResponse
-    ) -> None:
-        call = self._engine.ConnectExecutor(
+    async def _run(self, registration: ExecutorCredentials) -> None:
+        call = self._engine.connect_executor(
             metadata=(("authorization", f"Bearer {registration.token}"),)
         )
         receive = asyncio.create_task(call.read())
@@ -271,9 +289,15 @@ class WorkflowExecutor:
         self._stop.set()
 
     async def execute_node(
-        self, request: messages.ExecuteNodeRequest
+        self,
+        request: messages.ExecuteNodeRequest,
+        inputs: DataMap | None = None,
     ) -> DataMap:
-        """Run the generated code in a separate Python process."""
+        """Run the generated code in a separate Python process.
+
+        The stream supplies validated inputs. Decode inputs from the request
+        if the caller supplies no inputs.
+        """
         node = _NODE_ADAPTER.validate_python(MessageToDict(request.node))
         if not node.has_code():
             raise ValueError(
@@ -282,7 +306,8 @@ class WorkflowExecutor:
         code: str = getattr(node, "code")
         if not code.strip():
             raise ValueError("The node needs Python code.")
-        inputs = decode_data_map(request.inputs) if request.inputs else {}
+        if inputs is None:
+            inputs = decode_data_map(request.inputs) if request.inputs else {}
         return await execute_in_child_process(
             code,
             inputs,
@@ -293,16 +318,15 @@ class WorkflowExecutor:
     async def _execute_node(
         self, request: messages.ExecuteNodeRequest
     ) -> DataMap:
-        if request.inputs:
-            decode_data_map(request.inputs)
-        return await self.execute_node(request)
+        """Validate the request inputs before dispatch."""
+        inputs = decode_data_map(request.inputs) if request.inputs else {}
+        return await self.execute_node(request, inputs)
 
     @staticmethod
     def _node_result(attempt: _NodeAttempt) -> messages.ExecuteNodeResponse:
         request = attempt.request
         result = messages.ExecuteNodeResponse(
             node_xid=request.node_xid,
-            attempt_id=request.attempt_id,
             status=messages.COMPLETED,
         )
         result.started_at.FromDatetime(attempt.started_at)

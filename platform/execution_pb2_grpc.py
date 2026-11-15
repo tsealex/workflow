@@ -38,14 +38,14 @@ class WorkflowEngineStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.RegisterExecutor = channel.unary_unary(
-            "/workflow.executor.v1.WorkflowEngine/RegisterExecutor",
+        self.register_executor = channel.unary_unary(
+            "/workflow.executor.v1.WorkflowEngine/register_executor",
             request_serializer=execution__pb2.RegisterExecutorRequest.SerializeToString,
             response_deserializer=execution__pb2.RegisterExecutorResponse.FromString,
             _registered_method=True,
         )
-        self.ConnectExecutor = channel.stream_stream(
-            "/workflow.executor.v1.WorkflowEngine/ConnectExecutor",
+        self.connect_executor = channel.stream_stream(
+            "/workflow.executor.v1.WorkflowEngine/connect_executor",
             request_serializer=execution__pb2.ExecutorMessage.SerializeToString,
             response_deserializer=execution__pb2.EngineMessage.FromString,
             _registered_method=True,
@@ -55,13 +55,13 @@ class WorkflowEngineStub(object):
 class WorkflowEngineServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def RegisterExecutor(self, request, context):
+    def register_executor(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
         raise NotImplementedError("Method not implemented!")
 
-    def ConnectExecutor(self, request_iterator, context):
+    def connect_executor(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details("Method not implemented!")
@@ -70,13 +70,13 @@ class WorkflowEngineServicer(object):
 
 def add_WorkflowEngineServicer_to_server(servicer, server):
     rpc_method_handlers = {
-        "RegisterExecutor": grpc.unary_unary_rpc_method_handler(
-            servicer.RegisterExecutor,
+        "register_executor": grpc.unary_unary_rpc_method_handler(
+            servicer.register_executor,
             request_deserializer=execution__pb2.RegisterExecutorRequest.FromString,
             response_serializer=execution__pb2.RegisterExecutorResponse.SerializeToString,
         ),
-        "ConnectExecutor": grpc.stream_stream_rpc_method_handler(
-            servicer.ConnectExecutor,
+        "connect_executor": grpc.stream_stream_rpc_method_handler(
+            servicer.connect_executor,
             request_deserializer=execution__pb2.ExecutorMessage.FromString,
             response_serializer=execution__pb2.EngineMessage.SerializeToString,
         ),
@@ -95,7 +95,7 @@ class WorkflowEngine(object):
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
-    def RegisterExecutor(
+    def register_executor(
         request,
         target,
         options=(),
@@ -110,7 +110,7 @@ class WorkflowEngine(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            "/workflow.executor.v1.WorkflowEngine/RegisterExecutor",
+            "/workflow.executor.v1.WorkflowEngine/register_executor",
             execution__pb2.RegisterExecutorRequest.SerializeToString,
             execution__pb2.RegisterExecutorResponse.FromString,
             options,
@@ -125,7 +125,7 @@ class WorkflowEngine(object):
         )
 
     @staticmethod
-    def ConnectExecutor(
+    def connect_executor(
         request_iterator,
         target,
         options=(),
@@ -140,7 +140,7 @@ class WorkflowEngine(object):
         return grpc.experimental.stream_stream(
             request_iterator,
             target,
-            "/workflow.executor.v1.WorkflowEngine/ConnectExecutor",
+            "/workflow.executor.v1.WorkflowEngine/connect_executor",
             execution__pb2.ExecutorMessage.SerializeToString,
             execution__pb2.EngineMessage.FromString,
             options,

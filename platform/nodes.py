@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self, TypeAlias, cast
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -87,11 +88,42 @@ class BaseNode(BaseModel):
         """Report whether this node type has a Python code field."""
         return False
 
+    def extract_input_states(self, states: DataMap) -> DataMap:
+        """Return an empty input map for this node."""
+        return {}
 
-class ActionNode(BaseNode):
+
+class _InputStateNode(BaseNode):
+    """Read selected workflow state paths."""
+
+    input_states: list[str]
+
+    def extract_input_states(self, states: DataMap) -> DataMap:
+        """Copy selected values and use None for missing final keys.
+
+        Raise KeyError if an intermediate value is missing or is not an object.
+        """
+        inputs: DataMap = {}
+        # Copy parent paths before adding any missing child keys.
+        for path in sorted(self.input_states, key=lambda path: path.count(".")):
+            keys = path.split(".")
+            source = states
+            for key in keys[:-1]:
+                child = source.get(key)
+                if not isinstance(child, dict):
+                    raise KeyError(path)
+                source = child
+
+            target = inputs
+            for key in keys[:-1]:
+                target = cast(DataMap, target.setdefault(key, {}))
+            target[keys[-1]] = deepcopy(source.get(keys[-1]))
+        return inputs
+
+
+class ActionNode(_InputStateNode):
     description: str
     code: str
-    input_states: list[str]
     output_states: list[str]
     type: Literal["action"] = Field(default="action", frozen=True)
 
@@ -100,11 +132,10 @@ class ActionNode(BaseNode):
         return True
 
 
-class DecisionNode(BaseNode):
+class DecisionNode(_InputStateNode):
     description: str
     branches: list[str]
     code: str
-    input_states: list[str]
     type: Literal["decision"] = Field(default="decision", frozen=True)
 
     def has_code(self) -> bool:
@@ -123,9 +154,8 @@ class DecisionNode(BaseNode):
         return self
 
 
-class SignalNode(BaseNode):
+class SignalNode(_InputStateNode):
     event_id: UUID
-    input_states: list[str]
     type: Literal["signal"] = Field(default="signal", frozen=True)
 
 

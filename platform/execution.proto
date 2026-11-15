@@ -6,8 +6,8 @@ import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service WorkflowEngine {
-  rpc RegisterExecutor(RegisterExecutorRequest) returns (RegisterExecutorResponse);
-  rpc ConnectExecutor(stream ExecutorMessage) returns (stream EngineMessage);
+  rpc register_executor(RegisterExecutorRequest) returns (RegisterExecutorResponse);
+  rpc connect_executor(stream ExecutorMessage) returns (stream EngineMessage);
 }
 
 message RegisterExecutorRequest {
@@ -41,8 +41,6 @@ message ExecuteNodeRequest {
   google.protobuf.Struct node = 3;
   // UTF-8 JSON object. The encoding preserves integer precision.
   optional bytes inputs = 4;
-  // The engine assigns a new ID for each dispatch of the visit.
-  string attempt_id = 5;
 }
 
 message InterruptNodeRequest {
@@ -56,8 +54,6 @@ message ExecuteNodeResponse {
   optional bytes outputs = 3;
   google.protobuf.Timestamp started_at = 4;
   google.protobuf.Timestamp ended_at = 5;
-  // Copy this ID from the request for this attempt.
-  string attempt_id = 6;
 }
 
 enum ExecutionStatus {
