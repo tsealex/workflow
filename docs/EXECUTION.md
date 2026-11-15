@@ -210,6 +210,97 @@ Each node visit has its own row. This includes concurrent visits on fork branche
 
 An interruptible edge that exits the region ends its current iteration and prevents the remaining items from starting. Execution continues at the edge's target according to the [interruptible edge rules](EDGES.md#interruptible-edge).
 
+## Fork, join, and merge scheduling
+
+`WorkflowEngine` tracks branches separately for each fork execution. This algorithm requires an assigned join for each fork. The examples below specify those assignments.
+
+The engine follows the selected edge from a `DecisionNode` and all outgoing edges from a non-decision node, following the [edge patterns](EDGES.md#edge-patterns).
+
+```text
+When an execution completes successfully:
+    Identify its selected successors.
+    If it selects one successor:
+        Continue the same branch to that successor.
+    If it selects multiple successors:
+        Remember the join assigned to this fork.
+        Track one pending branch per selected successor.
+        Remember the enclosing branch, if any.
+        Start each selected successor independently.
+
+When a branch reaches a node:
+    If this node is the join assigned to that branch:
+        Mark the branch as arrived.
+        Wait for all branches from the same fork execution.
+        Once all have arrived:
+            If an enclosing branch exists:
+                Continue that branch to this node and repeat the check.
+            Otherwise:
+                Start one execution of the join.
+    Otherwise:
+        Start a new execution of this node on the same branch.
+```
+
+The engine keeps separate [node visits](#node_execution) for concurrent executions and loop iterations. The [checkpoint rules](#dispatch-and-checkpoints) apply to each transition. Subscripts in the examples identify separate visits, such as `B₁` and `B₂`.
+
+### Decision followed by a merge
+
+`A` selects exactly one of `B` and `C`. Both paths lead to `D`.
+
+```mermaid
+flowchart LR
+    A{A} -->|b| B[B]
+    A -->|default| C[C]
+    B --> D[D]
+    C --> D
+```
+
+`A` selects `B`, so the engine starts `B₁`. The engine starts `D₁` when `B₁` finishes because no enclosing fork waits at `D`. Selecting `C` follows the same sequence through `C`.
+
+### Fork followed by repeated joins
+
+The fork at `A` joins at `B`. Each execution of `B` forks again and joins at the next execution of `B`.
+
+```mermaid
+flowchart LR
+    A[A] --> G[G]
+    A --> D[D]
+    G --> B[B]
+    D --> B
+    B --> C[C]
+    C --> B
+    B --> E[E]
+    E --> D
+```
+
+1. `A` finishes, and the engine starts `G₁` and `D₁`.
+2. The engine starts `B₁` after both finish.
+3. `B₁` finishes, and the engine starts `C₁` and `E₁`.
+4. `E₁` finishes, and the engine starts `D₂` on the same branch.
+5. The engine starts `B₂` after both `C₁` and `D₂` finish, in either order.
+
+The completion of `D₁` belongs to the fork started by `A`. The engine waits for `D₂` to complete the branch started by `B₁`.
+
+### Concurrent visits to the same node
+
+`S` starts both `A` and `B`, and its branches join at `F`. The decision nodes `A` and `B` can select each other or exit to `F`.
+
+```mermaid
+flowchart LR
+    S[S] --> A{A}
+    S --> B{B}
+    A -->|repeat| B
+    B -->|repeat| A
+    A -->|default| F[F]
+    B -->|default| F
+```
+
+1. `S` finishes, and the engine starts `A₁` and `B₁` concurrently.
+2. `A₁` selects `B`, so the engine starts `B₂` even if `B₁` is still running.
+3. `B₁` selects `A`, so the engine starts `A₂`.
+4. `B₂` and `A₂` select `F`, and the engine executes `F` once both arrive.
+
+The engine waits at `F` because it is the assigned join. Each visit to `A` or `B` starts a separate execution on its existing branch.
+
 ## Node inputs and outputs
 
 The engine validates workflow inputs against `Workflow.states` before initializing workflow state.

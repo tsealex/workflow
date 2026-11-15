@@ -44,7 +44,7 @@ An interruptible edge connects a child node to a child node in an enclosing regi
 
 ## Edge patterns
 
-The graph determines where paths split and which fork or decision they came from when they converge. A region’s `final` node can be a join or merge. The diagrams show the corresponding [UML activity nodes](https://www.omg.org/spec/UML/2.5.1/).
+The graph determines where paths split and which fork or decision they came from when they converge. A region’s `final` node can be a join or merge. The [scheduling algorithm and walkthroughs](EXECUTION.md#fork-join-and-merge-scheduling) describe how the engine tracks branches and node visits once each fork's join is assigned. The diagrams show the corresponding [UML activity nodes](https://www.omg.org/spec/UML/2.5.1/).
 
 ### Fork
 
