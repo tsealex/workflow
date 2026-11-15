@@ -77,24 +77,39 @@ class EventSelector(BaseModel):
     filter: FilterMap | None = None
 
 
-class ActionNode(BaseModel):
+class BaseNode(BaseModel):
+    """Provide the identity and name shared by workflow nodes."""
+
     id: UUID
     name: str
+
+    def has_code(self) -> bool:
+        """Report whether this node type has a Python code field."""
+        return False
+
+
+class ActionNode(BaseNode):
     description: str
     code: str
     input_states: list[str]
     output_states: list[str]
     type: Literal["action"] = Field(default="action", frozen=True)
 
+    def has_code(self) -> bool:
+        """Report that this node type has a Python code field."""
+        return True
 
-class DecisionNode(BaseModel):
-    id: UUID
-    name: str
+
+class DecisionNode(BaseNode):
     description: str
     branches: list[str]
     code: str
     input_states: list[str]
     type: Literal["decision"] = Field(default="decision", frozen=True)
+
+    def has_code(self) -> bool:
+        """Report that this node type has a Python code field."""
+        return True
 
     @model_validator(mode="after")
     def validate_constraints(self) -> Self:
@@ -108,17 +123,13 @@ class DecisionNode(BaseModel):
         return self
 
 
-class SignalNode(BaseModel):
-    id: UUID
-    name: str
+class SignalNode(BaseNode):
     event_id: UUID
     input_states: list[str]
     type: Literal["signal"] = Field(default="signal", frozen=True)
 
 
-class WaitNode(BaseModel):
-    id: UUID
-    name: str
+class WaitNode(BaseNode):
     duration: timedelta | None = None
     until: datetime | None = None
     event: EventSelector | None = None
@@ -145,9 +156,7 @@ class _RegionBoundary(BaseModel):
     id: UUID = Field(default_factory=uuid4)
 
 
-class RegionNode(BaseModel):
-    id: UUID
-    name: str
+class RegionNode(BaseNode):
     nodes: list[Node]
     edges: list[Edge]
     initial: _RegionBoundary = Field(default_factory=_RegionBoundary)

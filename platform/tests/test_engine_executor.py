@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import grpc
+from pydantic import ValidationError
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
@@ -20,6 +21,7 @@ from execution_pb2_grpc import (
     add_WorkflowEngineServicer_to_server,
 )
 from executors import WorkflowExecutor
+from nodes import ActionNode, DecisionNode, SignalNode
 
 
 class RecordingEngine(WorkflowEngine):
@@ -104,10 +106,19 @@ class EngineExecutorTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*self.tasks, return_exceptions=True)
 
     @staticmethod
-    def new_request(**kwargs):
+    def new_request(node=None, **kwargs):
         request = messages.ExecuteNodeRequest(node_xid=str(uuid4()), **kwargs)
         request.started_at.FromDatetime(datetime.now(UTC))
-        request.node.update({"code": "unused test fixture"})
+        if node is None:
+            node = ActionNode(
+                id=uuid4(),
+                name="Action fixture",
+                description="Run test code.",
+                code="unused test fixture",
+                input_states=[],
+                output_states=[],
+            )
+        request.node.update(node.model_dump(mode="json"))
         return request
 
     async def connect_executor(self):
@@ -117,6 +128,76 @@ class EngineExecutorTest(unittest.IsolatedAsyncioTestCase):
             await self.engine.available.get(), self.registration.executor_id
         )
         return task
+
+    async def test_dispatch_executes_generated_code_in_child_process(self):
+        async with asyncio.timeout(5):
+            with patch("executors.Path.home", return_value=self.home):
+                self.executor = WorkflowExecutor(self.channel)
+            task = await self.connect_executor()
+            request = self.new_request(
+                inputs=b'{"nested": {"total": 9007199254740993}}'
+            )
+            request.node.update({"code": """
+class NamedByTheCompiler(Executable):
+    async def execute(self, context):
+        return {"sum": context.input["nested"]["total"] + 1}
+
+    async def test_execute(self):
+        pass
+"""})
+            self.engine.execute_node(self.registration.executor_id, request)
+            result = await self.engine.results.get()
+            self.assertEqual(result.status, messages.COMPLETED)
+            self.assertEqual(
+                json.loads(result.outputs), {"sum": 9007199254740994}
+            )
+
+            executor_id = self.registration.executor_id
+            self.assertEqual(await self.engine.available.get(), executor_id)
+            decision = DecisionNode(
+                id=uuid4(),
+                name="Decision fixture",
+                description="Select a branch.",
+                branches=["selected"],
+                code="""
+class Choose(Executable):
+    async def execute(self, context):
+        return {"branch": "selected"}
+
+    async def test_execute(self):
+        pass
+""",
+                input_states=[],
+            )
+            self.engine.execute_node(executor_id, self.new_request(decision))
+            result = await self.engine.results.get()
+            self.assertEqual(result.status, messages.COMPLETED)
+            self.assertEqual(json.loads(result.outputs), {"branch": "selected"})
+            self.executor.shutdown()
+            await task
+
+    async def test_executor_validates_node_before_launching_code(self):
+        executor = WorkflowExecutor(self.channel)
+        malformed = self.new_request()
+        del malformed.node["name"]
+        signal = self.new_request(
+            SignalNode(
+                id=uuid4(),
+                name="Signal fixture",
+                event_id=uuid4(),
+                input_states=[],
+            )
+        )
+        signal.node.update({"code": "unexpected executable code"})
+
+        with patch("executors.execute_in_child_process") as launch:
+            with self.assertRaises(ValidationError):
+                await executor.execute_node(malformed)
+            with self.assertRaisesRegex(
+                ValueError, "action and decision nodes"
+            ):
+                await executor.execute_node(signal)
+            launch.assert_not_awaited()
 
     async def test_dispatch_commit_and_reconnect(self):
         async with asyncio.timeout(5):

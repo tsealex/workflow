@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,18 +13,22 @@ import grpc
 import keyring
 from cryptography.fernet import Fernet, InvalidToken
 from filelock import AsyncFileLock
+from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import DecodeError
 from keyring.backend import KeyringBackend
 from keyring.backends.chainer import ChainerBackend
-from pydantic import BaseModel
+from pydantic import TypeAdapter
 
 import execution_pb2 as messages
 from execution_pb2_grpc import WorkflowEngineStub
-from nodes import DataMap, decode_data_map
+from nodes import DataMap, Node, decode_data_map
+from processes import execute_in_child_process
+from runtime import ExecContext as ExecContext, Executable as Executable
 
 logger = logging.getLogger(__name__)
 _CredentialResult = TypeVar("_CredentialResult")
 
+_NODE_ADAPTER = TypeAdapter(Node)
 _KEYRING_SERVICE = "workflow.executor"
 _SYSTEM_KEYRINGS = {
     "keyring.backends.SecretService",
@@ -138,8 +141,16 @@ class _NodeAttempt:
 class WorkflowExecutor:
     """Receive work from the engine and report node results."""
 
-    def __init__(self, channel: grpc.aio.Channel) -> None:
+    def __init__(
+        self,
+        channel: grpc.aio.Channel,
+        *,
+        node_timeout: float = 30,
+        node_output_limit: int = 1024 * 1024,
+    ) -> None:
         self._engine = WorkflowEngineStub(channel)
+        self._node_timeout = node_timeout
+        self._node_output_limit = node_output_limit
         self._stop = asyncio.Event()
         self._running = False
         self._credentials_path = (
@@ -262,13 +273,27 @@ class WorkflowExecutor:
     async def execute_node(
         self, request: messages.ExecuteNodeRequest
     ) -> DataMap:
-        """Run the node and clean up its resources if canceled."""
-        raise NotImplementedError
+        """Run the generated code in a separate Python process."""
+        node = _NODE_ADAPTER.validate_python(MessageToDict(request.node))
+        if not node.has_code():
+            raise ValueError(
+                "The executor only runs action and decision nodes."
+            )
+        code: str = getattr(node, "code")
+        if not code.strip():
+            raise ValueError("The node needs Python code.")
+        inputs = decode_data_map(request.inputs) if request.inputs else {}
+        return await execute_in_child_process(
+            code,
+            inputs,
+            timeout=self._node_timeout,
+            output_limit=self._node_output_limit,
+        )
 
     async def _execute_node(
         self, request: messages.ExecuteNodeRequest
     ) -> DataMap:
-        if request.HasField("inputs"):
+        if request.inputs:
             decode_data_map(request.inputs)
         return await self.execute_node(request)
 
@@ -294,17 +319,3 @@ class WorkflowExecutor:
             logger.exception("Node execution failed for %s", request.node_xid)
             result.status = messages.FAILED
         return result
-
-
-class ExecContext(BaseModel):
-    """Supplies the selected input values for a node execution."""
-
-    input: DataMap
-
-
-class Executable(ABC):
-    @abstractmethod
-    async def execute(self, context: ExecContext) -> DataMap: ...
-
-    @abstractmethod
-    async def test_execute(self) -> None: ...
