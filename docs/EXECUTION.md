@@ -19,8 +19,8 @@ Nodes within a workflow execution can share a machine or target different machin
 #### Protocol
 
 1. `WorkflowExecutor` is configured with the `WorkflowEngine` URL.
-2. On first startup, the executor calls `RegisterExecutor` over gRPC at that URL. The engine returns an executor ID and token, and the executor saves both.
-3. The executor opens a bidirectional `ConnectExecutor` call and sends its saved token in the gRPC call metadata.
+2. On startup, the executor calls [`RegisterExecutor`](#registerexecutor) with saved credentials, or saves newly issued credentials on first registration.
+3. The executor opens `ConnectExecutor` with its token in gRPC metadata. The engine records `last_connected_at` after authentication.
 4. The engine records the node execution before sending an `ExecuteNodeRequest` to the selected executor. It sends the next node to that executor only after committing the current node's result.
 5. The executor sends a `ExecuteNodeResponse` when the node finishes or stops in response to an interruption. The engine verifies that the sender is the assigned executor before committing the result.
 6. The engine can send an `InterruptNodeRequest` while a node is running. The executor must be able to receive and process this message during execution.
@@ -33,10 +33,8 @@ sequenceDiagram
     participant X as WorkflowExecutor
     participant E as WorkflowEngine
     Note over X: Configured with the engine URL
-    opt First startup
-        X->>E: RegisterExecutor
-        E-->>X: Executor ID and token
-    end
+    X->>E: RegisterExecutor with saved credentials, or neither field
+    E-->>X: Authenticated or newly created executor ID and token
     X->>E: ConnectExecutor with saved token
     loop One node at a time
         Note over E: Record the node execution
@@ -58,12 +56,17 @@ sequenceDiagram
 
 ###### `RegisterExecutor`
 
-The engine creates an executor ID and token for a first-time registration.
+The engine authenticates the supplied ID and token against [`workflow_executor`](#workflow_executor), or creates a registration when both are omitted. The engine rejects incomplete or invalid credentials and IDs that are already connected. Each ID can have one live stream.
+
+The executor saves credentials in `~/.workflow/executor.credentials`, encrypted with a key in the user's OS keyring, and loads them on startup. The executor reports unreadable or invalid credentials as errors.
 
 ```protobuf
 rpc RegisterExecutor(RegisterExecutorRequest) returns (RegisterExecutorResponse)
 
-RegisterExecutorRequest {}
+RegisterExecutorRequest {
+  executor_id: optional UUID
+  token: optional str
+}
 
 RegisterExecutorResponse {
   executor_id: UUID
@@ -73,7 +76,7 @@ RegisterExecutorResponse {
 
 ###### `ConnectExecutor`
 
-The engine sends `EngineMessage` envelopes, and the executor sends `ExecutorMessage` envelopes. Each envelope contains one typed payload. `node_xid` identifies the `node_execution` row.
+The executor calls `ConnectExecutor` on the engine to open the stream. The engine sends `EngineMessage` envelopes over that stream, and the executor sends `ExecutorMessage` envelopes. Each envelope contains one typed payload. `node_xid` identifies the `node_execution` row.
 
 ```protobuf
 rpc ConnectExecutor(stream ExecutorMessage) returns (stream EngineMessage)
@@ -143,9 +146,20 @@ The engine creates executions in `RUNNING` and sets `started_at` at creation. It
 
 ## Persistence model
 
-`WorkflowEngine` stores workflow executions and their node executions in the database using the tables below.
+`WorkflowEngine` stores executor registrations, workflow executions, and node executions in the database using the tables below.
 
 Each execution identifies its shared [WorkflowSnapshot](#workflow_snapshot) by `workflow_id` and `workflow_revision`.
+
+### `workflow_executor`
+
+The engine persists each executor registration so its ID and affinity bindings survive restarts. The executor stores the returned ID and raw token in an encrypted local file and loads them on startup. The engine stores the token hash for authentication.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | `UUID` | Identifies the executor and remains stable across restarts. |
+| `token_hash` | `str` | Stores the hash used to authenticate the executor token. |
+| `created_at` | `datetime` | Records when the engine created the registration. |
+| `last_connected_at` | `datetime` (nullable) | Records the latest authenticated stream connection, or null before the first connection. |
 
 ### `workflow_snapshot`
 
@@ -205,6 +219,8 @@ The engine validates workflow inputs against `Workflow.states` before initializi
 Before a node visit starts, the engine saves a copy of its selected inputs in [`node_execution.inputs`](#node_execution). This includes values selected from the current collection item or an enclosing region's current item.
 
 Each node visit has its own saved inputs, including visits that run concurrently. The node receives a copy of its saved inputs, including when execution continues from `SUSPENDED`. Later changes to workflow state do not change these inputs.
+
+For `ActionNode` and `DecisionNode`, the executor passes that copy in `ExecContext.input` when it calls [`Executable.execute`](WORKFLOW.md#executable-interface).
 
 ### Output application
 

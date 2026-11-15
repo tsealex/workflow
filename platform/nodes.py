@@ -1,21 +1,75 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
+from enum import StrEnum
+from math import isfinite
 from typing import Annotated, Literal, Self, TypeAlias
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, model_validator
-from typing_extensions import NotRequired, TypedDict
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 DataMap: TypeAlias = dict[str, object]
-FilterOperator: TypeAlias = Literal[
-    "eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in"
-]
+
+
+def _decode_number(value: str) -> float:
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError("DataMap numbers must be finite.")
+    return number
+
+
+def decode_data_map(value: bytes) -> DataMap:
+    """Read a UTF-8 JSON object with finite numbers."""
+    data = json.loads(
+        value.decode(),
+        parse_float=_decode_number,
+        parse_constant=_decode_number,
+    )
+    if not isinstance(data, dict):
+        raise ValueError("Expected a DataMap object.")
+    return data
+
+
+class FilterOperator(StrEnum):
+    """Identify a comparison in an event filter."""
+
+    EQ = "eq"
+    NE = "ne"
+    GT = "gt"
+    GTE = "gte"
+    LT = "lt"
+    LTE = "lte"
+    IN = "in"
+    NOT_IN = "not_in"
+
+
 FilterMap: TypeAlias = dict[str, dict[FilterOperator, object]]
 
-# Python reserves "from", so use a dictionary to retain the documented edge keys.
-Edge = TypedDict("Edge", {"from": UUID, "to": UUID, "branch": NotRequired[str]})
+
+class Edge(BaseModel):
+    """Connect two nodes in a workflow."""
+
+    model_config = ConfigDict(validate_by_name=True, serialize_by_alias=True)
+
+    from_: UUID = Field(alias="from")
+    to: UUID
+    branch: str | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler):
+        """Omit the branch key for edges without a branch label."""
+        data = handler(self)
+        if self.branch is None:
+            data.pop("branch", None)
+        return data
 
 
 class EventSelector(BaseModel):

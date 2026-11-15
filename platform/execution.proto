@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package workflow.executor.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service WorkflowEngine {
+  rpc RegisterExecutor(RegisterExecutorRequest) returns (RegisterExecutorResponse);
+  rpc ConnectExecutor(stream ExecutorMessage) returns (stream EngineMessage);
+}
+
+message RegisterExecutorRequest {
+  optional string executor_id = 1;
+  optional string token = 2;
+}
+
+message RegisterExecutorResponse {
+  string executor_id = 1;
+  string token = 2;
+}
+
+message EngineMessage {
+  oneof payload {
+    ExecuteNodeRequest execute_node = 1;
+    InterruptNodeRequest interrupt_node = 2;
+    EngineShutdown shutdown = 3;
+  }
+}
+
+message ExecutorMessage {
+  oneof payload {
+    ExecuteNodeResponse node_result = 1;
+    ExecutorShutdown shutdown = 2;
+  }
+}
+
+message ExecuteNodeRequest {
+  string node_xid = 1;
+  google.protobuf.Timestamp started_at = 2;
+  google.protobuf.Struct node = 3;
+  // UTF-8 JSON object. The encoding preserves integer precision.
+  optional bytes inputs = 4;
+  // The engine assigns a new ID for each dispatch of the visit.
+  string attempt_id = 5;
+}
+
+message InterruptNodeRequest {
+  string node_xid = 1;
+}
+
+message ExecuteNodeResponse {
+  string node_xid = 1;
+  ExecutionStatus status = 2;
+  // UTF-8 JSON object. Set only for a nonempty completed result.
+  optional bytes outputs = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  // Copy this ID from the request for this attempt.
+  string attempt_id = 6;
+}
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  RUNNING = 1;
+  FAILED = 2;
+  SUSPENDED = 3;
+  INTERRUPTED = 4;
+  COMPLETED = 5;
+}
+
+message EngineShutdown {}
+
+message ExecutorShutdown {}

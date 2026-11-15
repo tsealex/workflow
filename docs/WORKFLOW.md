@@ -88,10 +88,18 @@ During compilation, the LLM uses the node’s `description` to generate a concre
 ```python
 from abc import ABC, abstractmethod
 
+from pydantic import BaseModel
+
+from nodes import DataMap
+
+
+class ExecContext(BaseModel):
+    input: DataMap
+
 
 class Executable(ABC):
     @abstractmethod
-    async def execute(self, inputs: DataMap) -> DataMap:
+    async def execute(self, context: ExecContext) -> DataMap:
         ...
 
     @abstractmethod
@@ -100,19 +108,19 @@ class Executable(ABC):
 ```
 
 - Generate idempotent action `execute` implementations so that resuming a suspended node with its saved inputs does not duplicate external side effects.
-- Pass the values selected by `input_states` to `execute` as a nested [DataMap](NODES.md#datamap).
+- Read the values selected by `input_states` from `ExecContext.input`, a nested [DataMap](NODES.md#datamap).
 - Return a nested `DataMap` containing the values at the paths in `output_states` for an `ActionNode`. Return an empty `DataMap` when the list is empty.
 - A `DecisionNode` returns `{"branch": label}`, where `label` is a declared branch or `"default"`. The engine uses that label to select the outgoing edge.
 
 ### Code validation
 
-The generated `test_execute` calls `execute` with representative inputs and asserts the expected outputs. It can temporarily replace external dependencies with test doubles. The validation harness runs `test_execute` in an isolated environment without live credentials and treats an exception as a validation failure.
+The generated `test_execute` passes an `ExecContext` containing representative inputs to `execute` and asserts the expected outputs. It can temporarily replace external dependencies with test doubles. The validation harness runs `test_execute` in an isolated environment without live credentials and treats an exception as a validation failure.
 
 ## State paths
 
 Use a state name for a top-level field and a dotted path for a nested field. Read paths must resolve to a property declared in `Workflow.states` or the [current item](#regionnode) of the node's region or an enclosing region. Write paths must resolve to properties declared in `Workflow.states`. An empty list selects no values.
 
-For example, with `input_states: ["order.total"]`, the engine passes `{"order": {"total": 125.50}}` to `execute`. With `output_states: ["payment.approved"]`, the action returns `{"payment": {"approved": true}}` and the engine writes only `payment.approved`.
+For example, with `input_states: ["order.total"]`, the executor calls `execute` with `ExecContext(input={"order": {"total": 125.50}})`. With `output_states: ["payment.approved"]`, the action returns `{"payment": {"approved": true}}` and the engine writes only `payment.approved`.
 
 - Derive the types for code generation from the selected workflow state paths and collection item schemas.
 - Omit `output_states` on duration and timestamp waits.
