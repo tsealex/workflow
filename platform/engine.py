@@ -307,7 +307,7 @@ class WorkflowEngine(WorkflowEngineServicer):
             read_only=read_only,
         )
 
-    async def _suspend_nodes(
+    async def _suspend_running_nodes(
         self, session: AsyncSession, node_xids: Collection[UUID]
     ) -> None:
         """Suspend the specified running nodes and update their workflows.
@@ -374,6 +374,7 @@ class WorkflowEngine(WorkflowEngineServicer):
         async with workflow_cache.lock:
             interrupted_node_xids = []
             running_nodes = []
+            # The workflow cache identifies its node executions without a query.
             for node_xid in workflow_cache.node_xids:
                 node_execution = await self.checkout_node_execution(
                     session, node_xid
@@ -386,6 +387,7 @@ class WorkflowEngine(WorkflowEngineServicer):
                 ):
                     continue
                 if node_execution.status == ExecutionStatus.RUNNING:
+                    # The engine keeps executor assignments for interrupt requests.
                     executor_id = self._running_node_xids.get(
                         node_xid, node_execution.executor_id
                     )
@@ -395,10 +397,13 @@ class WorkflowEngine(WorkflowEngineServicer):
 
             if not interrupted_node_xids:
                 return
+            # The engine saves interruption statuses before it notifies executors.
             await session.commit()
+            # The engine stops tracking interrupted nodes as running or suspended.
             for node_xid in interrupted_node_xids:
                 self._running_node_xids.pop(node_xid, None)
                 self._suspended_node_xids.discard(node_xid)
+            # The engine requests a stop only for nodes that were running.
             for node_xid, executor_id in running_nodes:
                 executor = self._executors.get(executor_id)
                 if executor is None or executor.closing:
@@ -449,7 +454,7 @@ class WorkflowEngine(WorkflowEngineServicer):
                     if executor.closing:
                         return
                     # Update the node execution status to RUNNING.
-                    node_execution.status = ExecutionStatus.RUNNING
+                    node_execution.set_status(ExecutionStatus.RUNNING)
                     session.add(node_execution)
                     # Update the workflow execution status to RUNNING if it
                     # was SUSPENDED.
@@ -642,5 +647,7 @@ class WorkflowEngine(WorkflowEngineServicer):
             # Update the nodes that were running on this executor to
             # SUSPENDED, and remove them from the running node cache.
             async with self._sessions() as session:
-                await self._suspend_nodes(session, executor.running_node_xids)
+                await self._suspend_running_nodes(
+                    session, executor.running_node_xids
+                )
             del self._executors[executor_id]
