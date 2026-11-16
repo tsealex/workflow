@@ -116,12 +116,7 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.status, ExecutionStatus.RUNNING)
         self.assertEqual(second.status, ExecutionStatus.RUNNING)
         self.assertEqual(cached.workflow.states, {"item": {"quantity": 2}})
-        root = self.engine._workflow_snapshots[snapshot_id].get_root()
-        self.assertEqual(
-            {node.node_id: node.status for node in cached.nodes.values()},
-            {root.id: ExecutionStatus.RUNNING},
-        )
-        self.assertEqual(len(cached.nodes), 1)
+        self.assertEqual(cached.nodes, {})
 
         async with self.sessions() as session:
             execution = await session.get(WorkflowExecution, first.xid)

@@ -444,8 +444,8 @@ class EngineRegionSuccessorTest(unittest.IsolatedAsyncioTestCase):
             node_xid = UUID(request.node_xid)
             async with sessions() as session:
                 node = await session.get(NodeExecution, node_xid)
-                if previous_xid is not None:
-                    self.assertEqual(node.prev_xids, [previous_xid])
+                expected_previous = [previous_xid] if previous_xid else []
+                self.assertEqual(node.prev_xids, expected_previous)
             result = messages.ExecuteNodeResponse(
                 node_xid=request.node_xid,
                 status=messages.COMPLETED,
@@ -464,6 +464,99 @@ class EngineRegionSuccessorTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(
             set(node_ids),
-            {root.id, *(node.id for node in (first, second, third, last))},
+            {node.id for node in (first, second, third, last)},
         )
-        self.assertEqual(len(node_ids), 5)
+        self.assertEqual(len(node_ids), 4)
+
+    async def test_initial_fork_joins_after_recovery_without_region_records(
+        self,
+    ):
+        for nested_entry in (False, True):
+            for reverse in (False, True):
+                with self.subTest(nested_entry=nested_entry, reverse=reverse):
+                    database = create_async_engine("sqlite+aiosqlite://")
+                    self.addAsyncCleanup(database.dispose)
+                    async with database.begin() as connection:
+                        await connection.run_sync(Base.metadata.create_all)
+                    sessions = async_sessionmaker(
+                        database, expire_on_commit=False
+                    )
+                    left, right, join = [action(name) for name in "ABC"]
+                    root = region("Root", [left, right, join])
+                    owner = root
+                    if nested_entry:
+                        owner = region("Nested", [left, right])
+                        root = region("Root", [owner, join])
+                    destination = owner.final_id if nested_entry else join.id
+                    owner.edges = [
+                        Edge(from_=owner.initial_id, to=left.id),
+                        Edge(from_=owner.initial_id, to=right.id),
+                        Edge(from_=left.id, to=destination),
+                        Edge(from_=right.id, to=destination),
+                    ]
+                    workflow_id = uuid4()
+                    root_json = root.model_dump(mode="json")
+                    workflow = Workflow(
+                        id=workflow_id,
+                        revision=1,
+                        name="Synthetic initial fork workflow",
+                        root_json=root_json,
+                        states={"type": "object"},
+                    )
+                    async with sessions.begin() as session:
+                        session.add(workflow)
+                    engine = WorkflowEngine(sessions)
+                    execution = await engine.create_workflow_execution(
+                        workflow_id, {}
+                    )
+                    engine = WorkflowEngine(sessions)
+                    await engine.start()
+                    executor_id = uuid4()
+                    connection = _ExecutorConnection(executor_id)
+                    engine._executors[executor_id] = connection
+                    await engine._execute_suspended_nodes(executor_id)
+                    requests = [
+                        connection.queue.get_nowait().execute_node
+                        for _ in range(2)
+                    ]
+                    self.assertEqual(
+                        {request.node["name"] for request in requests},
+                        {"A", "B"},
+                    )
+                    if reverse:
+                        requests.reverse()
+                    for index, request in enumerate(requests):
+                        result = messages.ExecuteNodeResponse(
+                            node_xid=request.node_xid,
+                            status=messages.COMPLETED,
+                        )
+                        result.started_at.CopyFrom(request.started_at)
+                        await engine._process_node_result(
+                            executor_id, UUID(request.node_xid), result
+                        )
+                        if index == 0:
+                            self.assertTrue(connection.queue.empty())
+                    await engine._execute_suspended_nodes(executor_id)
+                    request = connection.queue.get_nowait().execute_node
+                    self.assertEqual(request.node["name"], "C")
+                    self.assertTrue(connection.queue.empty())
+                    async with sessions() as session:
+                        records = list(
+                            await session.scalars(
+                                select(NodeExecution).where(
+                                    NodeExecution.workflow_xid == execution.xid
+                                )
+                            )
+                        )
+                    self.assertEqual(
+                        {record.node_id for record in records},
+                        {left.id, right.id, join.id},
+                    )
+                    initial_xids = {
+                        UUID(request.node_xid) for request in requests
+                    }
+                    for record in records:
+                        expected = (
+                            initial_xids if record.node_id == join.id else set()
+                        )
+                        self.assertEqual(set(record.prev_xids), expected)

@@ -84,11 +84,12 @@ class _NodeScheduler:
         self,
         root: RegionNode,
         node_executions: dict[UUID, NodeExecution],
-        current: NodeExecution,
+        current: NodeExecution | None,
         branch: str | None,
     ) -> None:
         """Read the graph and visit history without changing either object.
 
+        Use current=None to get the initial nodes without a root execution.
         Branch arrivals and control traversal belong to this query only.
         """
         self.root = root
@@ -397,7 +398,7 @@ class _NodeScheduler:
         exec_metadata = ExecMetadata.model_validate(
             execution.exec_metadata or {}
         )
-        supplied = self.branch if execution.xid == self.current.xid else None
+        supplied = self.branch if execution is self.current else None
         if (
             exec_metadata.branch is not None
             and supplied is not None
@@ -428,7 +429,7 @@ class _NodeScheduler:
                     f"Decision history conflicts for execution {execution.xid}."
                 )
             return recorded
-        if selected_branch is None and execution.xid == self.current.xid:
+        if selected_branch is None and execution is self.current:
             selected_branch = "default"
         if selected_branch is not None:
             owner = self.regions[execution.node_id]
@@ -562,6 +563,8 @@ class _NodeScheduler:
         Replay predecessor history through query-local control vertices.
         Missing or conflicting visit history raises KeyError or ValueError.
         """
+        if (self.root.id, ()) not in self.recorded_regions:
+            self._arrive(self.root.id, set(), None, frozenset())
         order = TopologicalSorter(
             {
                 xid: execution.prev_xids
@@ -571,22 +574,19 @@ class _NodeScheduler:
         for xid in order:
             execution = self.node_executions[xid]
             key = execution.node_id, tuple(sorted(execution.prev_xids))
-            if execution.prev_xids:
-                if key in self.ready:
-                    branch = self.ready.pop(key)
-                else:
-                    branch = None
-                    for predecessor in execution.prev_xids:
-                        previous_branch = self.branches_by_execution[
-                            predecessor
-                        ]
-                        if self._is_cancelled(previous_branch):
-                            branch = previous_branch
-                            break
-                    if branch is None:
-                        raise ValueError(
-                            f"Execution {xid} has incomplete predecessor history."
-                        )
+            if key in self.ready:
+                branch = self.ready.pop(key)
+            elif execution.prev_xids:
+                branch = None
+                for predecessor in execution.prev_xids:
+                    previous_branch = self.branches_by_execution[predecessor]
+                    if self._is_cancelled(previous_branch):
+                        branch = previous_branch
+                        break
+                if branch is None:
+                    raise ValueError(
+                        f"Execution {xid} has incomplete predecessor history."
+                    )
             else:
                 owner = self.regions[execution.node_id]
                 entries = self._get_first_nodes(owner.id) if owner else set()
@@ -611,7 +611,7 @@ class _NodeScheduler:
         return {
             node_id: list(predecessors)
             for (node_id, predecessors), branch in self.ready.items()
-            if self.current.xid in predecessors
+            if (self.current is None or self.current.xid in predecessors)
             and not self._is_cancelled(branch)
         }
 
@@ -726,17 +726,9 @@ class WorkflowEngine(WorkflowEngineServicer):
             )
             session.add(execution)
             root = snapshot.get_root()
-            root_execution = self._add_node_execution(
-                session,
-                xid,
-                root.id,
-                None,
-                None,
-                status=ExecutionStatus.RUNNING,
-            )
-            nodes = {root_execution.xid: root_execution}
+            nodes: dict[UUID, NodeExecution] = {}
             successors = _NodeScheduler(
-                root, nodes, root_execution, None
+                root, nodes, None, None
             ).get_next_node_ids()
             for node_id, prev_xids in successors.items():
                 successor = self._add_node_execution(
