@@ -1,11 +1,12 @@
 import asyncio
+import json
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from hashlib import sha256
 from hmac import compare_digest
 from secrets import token_urlsafe
-from typing import AsyncIterator
+from typing import AsyncIterator, Collection
 from uuid import UUID, uuid4
 
 import grpc
@@ -21,6 +22,7 @@ from models import (
     NodeExecution,
     WorkflowSnapshot,
     ExecutionStatus,
+    TerminalExecutionStatus,
 )
 
 
@@ -36,11 +38,17 @@ class _WorkflowExecutorConnection:
         self._id = executor_id
         self._engine = engine
         self.queue = asyncio.Queue[messages.EngineMessage]()
+        self.running_node_xids: set[UUID] = set()
         self._closing = False
 
     def close(self):
         """Mark the executor connection as closing."""
         self._closing = True
+
+    @property
+    def closing(self) -> bool:
+        """Return True if the executor connection is closing."""
+        return self._closing
 
     async def loop_recv_messages(
         self,
@@ -65,18 +73,26 @@ class _WorkflowExecutorConnection:
         """
         while True:
             message = await self.queue.get()
-            if message.HasField("shutdown"):  # Engine shutdown
-                await context.write(message)
+            payload = message.WhichOneof("payload")
+            if self._closing and payload != "shutdown":
+                continue
+            await context.write(message)
+            if payload == "execute_node":
+                node_xid = UUID(message.execute_node.node_xid)
+                self.running_node_xids.add(node_xid)
+            elif payload == "interrupt_node":
+                node_xid = UUID(message.interrupt_node.node_xid)
+                self.running_node_xids.discard(node_xid)
+            elif payload == "shutdown":
+                self.close()
                 return
-            if not self._closing:
-                await context.write(message)
 
 
 @dataclass
 class _CachedWorkflowExecution:
     """Group one workflow execution and its node executions for the engine."""
 
-    workflow: WorkflowExecution
+    execution: WorkflowExecution
     node_xids: set[UUID] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -85,7 +101,7 @@ class _CachedWorkflowExecution:
 class _CachedNodeExecution:
     """Group one node execution and its workflow execution for the engine."""
 
-    node: NodeExecution
+    execution: NodeExecution
 
 
 class WorkflowEngine(WorkflowEngineServicer):
@@ -99,6 +115,10 @@ class WorkflowEngine(WorkflowEngineServicer):
         self._node_executions: dict[UUID, _CachedNodeExecution] = {}
         # Workflow snapshot caches by (workflow ID, reversion).
         self._workflow_snapshots: dict[tuple[UUID, int], WorkflowSnapshot] = {}
+        # Suspended node execution IDs.
+        self._suspended_node_xids: set[UUID] = set()
+        # Running node execution IDs by executor ID.
+        self._running_node_xids: dict[UUID, UUID] = {}
         self._started = False
 
     async def start(self):
@@ -186,6 +206,30 @@ class WorkflowEngine(WorkflowEngineServicer):
             xid = node.xid
             self._node_executions[xid] = _CachedNodeExecution(node)
             self._workflow_executions[node.workflow_xid].node_xids.add(xid)
+            assert node.status != ExecutionStatus.RUNNING
+            if node.status == ExecutionStatus.SUSPENDED:
+                self._suspended_node_xids.add(xid)
+
+    async def _load_workflow_snapshot(
+        self,
+        session: AsyncSession,
+        workflow_id: UUID,
+        revision: int,
+    ) -> WorkflowSnapshot:
+        """Return the cached snapshot or load it from the database.
+
+        Detach a loaded snapshot so the session cannot expire its cached values.
+        Raise KeyError if the workflow revision has no snapshot.
+        """
+        snapshot_id = workflow_id, revision
+        snapshot = self._workflow_snapshots.get(snapshot_id)
+        if snapshot is None:
+            snapshot = await session.get(WorkflowSnapshot, snapshot_id)
+            if snapshot is None:
+                raise KeyError(snapshot_id)
+            session.expunge(snapshot)
+            self._workflow_snapshots[snapshot_id] = snapshot
+        return snapshot
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -193,14 +237,21 @@ class WorkflowEngine(WorkflowEngineServicer):
         return sha256(token.encode()).hexdigest()
 
     async def _checkout_execution(
-        self, session: AsyncSession, cache_map: dict, xid: UUID, *, cache=None
+        self,
+        session: AsyncSession,
+        cache_map: dict,
+        xid: UUID,
+        *,
+        cache=None,
+        read_only: bool = False,
     ):
+        """Return the cached execution without session changes when read-only."""
         if cache is None:
             cache = cache_map[xid]
-        execution = cache.workflow
-        session.sync_session.expire_on_commit = False
-        session.add(execution)
-        # self._register_execution_commit_handler(session)
+        execution = cache.execution
+        if not read_only:
+            session.sync_session.expire_on_commit = False
+            session.add(execution)
         if object_state(execution).expired:
             await session.refresh(execution)
         return execution
@@ -211,16 +262,24 @@ class WorkflowEngine(WorkflowEngineServicer):
         workflow_xid: UUID,
         *,
         cache: _CachedWorkflowExecution | None = None,
+        read_only: bool = False,
     ) -> WorkflowExecution:
-        """Bind and return the shared workflow execution in `session`.
+        """Return the shared workflow execution, optionally without session changes.
 
         Use `cache` when supplied; otherwise look it up by `workflow_xid`.
-        Refresh expired attributes and keep them loaded after commit. The caller
-        owns the transaction; rollback can expire the workflow execution.
+        If `read_only` is true, return the cached workflow execution without
+        adding it to the session or refreshing expired attributes.
+        Otherwise, bind it to the session, refresh expired attributes, and keep
+        them loaded after commit. The caller owns the transaction; rollback can
+        expire the workflow execution.
         A missing `cache` entry raises KeyError.
         """
         return await self._checkout_execution(
-            session, self._workflow_executions, workflow_xid, cache=cache
+            session,
+            self._workflow_executions,
+            workflow_xid,
+            cache=cache,
+            read_only=read_only,
         )
 
     async def checkout_node_execution(
@@ -229,17 +288,141 @@ class WorkflowEngine(WorkflowEngineServicer):
         node_xid: UUID,
         *,
         cache: _CachedNodeExecution | None = None,
+        read_only: bool = False,
     ) -> NodeExecution:
-        """Bind and return the shared node execution in `session`.
+        """Return the shared node execution, optionally without session changes.
 
         Use `cache` when supplied; otherwise look it up by `node_xid`.
-        Refresh expired attributes and keep them loaded after commit. The caller
-        owns the transaction; rollback can expire the node execution. A missing
-        workflow execution or node execution raises KeyError.
+        If `read_only` is true, return the cached node execution without
+        adding it to the session or refreshing expired attributes.
+        Otherwise, bind it to the session, refresh expired attributes, and keep
+        them loaded after commit. The caller owns the transaction; rollback can
+        expire the node execution. A missing cache entry raises KeyError.
         """
         return await self._checkout_execution(
-            session, self._node_executions, node_xid, cache=cache
+            session,
+            self._node_executions,
+            node_xid,
+            cache=cache,
+            read_only=read_only,
         )
+
+    async def _suspend_nodes(
+        self, session: AsyncSession, node_xids: Collection[UUID]
+    ) -> None:
+        """Suspend the specified running nodes and update their workflows.
+
+        Save changes through the supplied session. After all nodes are saved,
+        suspend affected workflows that have no running nodes. Keep terminal
+        node and workflow statuses unchanged.
+        """
+        session.sync_session.expire_on_commit = False
+        workflow_xids = set()
+        # Suspend the specified nodes.
+        for node_xid in node_xids:
+            node_execution = self._node_executions[node_xid].execution
+            workflow_cache = self._workflow_executions[
+                node_execution.workflow_xid
+            ]
+            async with workflow_cache.lock:
+                session.add(node_execution)
+                if object_state(node_execution).expired:
+                    await session.refresh(node_execution)
+                workflow_xids.add(node_execution.workflow_xid)
+                if node_execution.status != ExecutionStatus.RUNNING:
+                    continue
+                node_execution.set_status(ExecutionStatus.SUSPENDED)
+                await session.commit()
+                # Remove the node from the running node list and add it to
+                # the suspended node list.
+                self._suspended_node_xids.add(node_xid)
+                self._running_node_xids.pop(node_xid, None)
+        # After all nodes are suspended, update the workflows that have no
+        # running nodes to SUSPENDED.
+        for workflow_xid in workflow_xids:
+            workflow_cache = self._workflow_executions[workflow_xid]
+            async with workflow_cache.lock:
+                workflow_execution = await self.checkout_workflow_execution(
+                    session, workflow_xid, cache=workflow_cache
+                )
+                if workflow_execution.status in TerminalExecutionStatus:
+                    continue
+                has_running_nodes = (
+                    set(self._running_node_xids.keys())
+                    & workflow_cache.node_xids
+                )
+                if (
+                    not has_running_nodes
+                    and workflow_execution.status != ExecutionStatus.SUSPENDED
+                ):
+                    workflow_execution.set_status(ExecutionStatus.SUSPENDED)
+                    await session.commit()
+
+    async def _execute_suspended_nodes(
+        self, executor_id: UUID, *, node_xids: set[UUID] | None = None
+    ):
+        executor = self._executors[executor_id]
+        if not executor or executor.closing:
+            return
+        if node_xids is None:
+            node_xids = set(self._node_executions)
+
+        for node_xid in node_xids:
+            node_cache = self._node_executions[node_xid]
+            workflow_xid = node_cache.execution.workflow_xid
+            workflow_cache = self._workflow_executions.get(workflow_xid)
+            if not workflow_cache:
+                continue
+            # Lock the workflow cache to prevent concurrent modifications
+            # while executing the node.
+            async with workflow_cache.lock:
+                async with self._sessions() as session:
+                    # Checkout the workflow and node executions in the session.
+                    node_execution = await self.checkout_node_execution(
+                        session, node_xid, cache=node_cache
+                    )
+                    if node_execution.status != ExecutionStatus.SUSPENDED:
+                        continue
+                    workflow_execution = await self.checkout_workflow_execution(
+                        session, workflow_xid, cache=workflow_cache
+                    )
+                    assert (
+                        workflow_execution.status not in TerminalExecutionStatus
+                    )
+                    snapshot = await self._load_workflow_snapshot(
+                        session,
+                        workflow_execution.workflow_id,
+                        workflow_execution.workflow_revision,
+                    )
+                    if executor.closing:
+                        return
+                    # Update the node execution status to RUNNING.
+                    node_execution.status = ExecutionStatus.RUNNING
+                    session.add(node_execution)
+                    # Update the workflow execution status to RUNNING if it
+                    # was SUSPENDED.
+                    if workflow_execution.status == ExecutionStatus.SUSPENDED:
+                        workflow_execution.status = ExecutionStatus.RUNNING
+                        session.add(workflow_execution)
+                    # Send the execute_node message to the executor.
+                    request_node_xid = str(node_xid)
+                    request_workflow_xid = str(workflow_xid)
+                    inputs = json.dumps(
+                        node_execution.inputs, allow_nan=False
+                    ).encode()
+                    node = snapshot.get_node(node_execution.node_id)
+                    request = messages.ExecuteNodeRequest(
+                        node_xid=request_node_xid,
+                        workflow_xid=request_workflow_xid,
+                        inputs=inputs,
+                        node=node.model_dump(mode="json"),
+                    )
+                    request.started_at.FromDatetime(node_execution.started_at)
+                    message = messages.EngineMessage(execute_node=request)
+                    await executor.queue.put(message)
+                    await session.commit()
+                    self._suspended_node_xids.discard(node_xid)
+                    self._running_node_xids[node_xid] = executor_id
 
     async def _authenticate_executor(
         self, context: grpc.aio.ServicerContext
@@ -404,4 +587,8 @@ class WorkflowEngine(WorkflowEngineServicer):
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Update the nodes that were running on this executor to
+            # SUSPENDED, and remove them from the running node cache.
+            async with self._sessions() as session:
+                await self._suspend_nodes(session, executor.running_node_xids)
             del self._executors[executor_id]
