@@ -358,6 +358,58 @@ class WorkflowEngine(WorkflowEngineServicer):
                     workflow_execution.set_status(ExecutionStatus.SUSPENDED)
                     await session.commit()
 
+    async def _interrupt_nodes(
+        self,
+        session: AsyncSession,
+        workflow_xid: UUID,
+        region_id: UUID | None = None,
+    ) -> None:
+        """Interrupt unfinished cached node executions of the workflow.
+
+        If region_id is supplied, select nodes with that region ID. Save all
+        selected nodes before sending interrupt requests to their executors.
+        Keep terminal node statuses and the workflow status unchanged.
+        """
+        workflow_cache = self._workflow_executions[workflow_xid]
+        async with workflow_cache.lock:
+            interrupted_node_xids = []
+            running_nodes = []
+            for node_xid in workflow_cache.node_xids:
+                node_execution = await self.checkout_node_execution(
+                    session, node_xid
+                )
+                if node_execution.status in TerminalExecutionStatus:
+                    continue
+                if (
+                    region_id is not None
+                    and node_execution.region_id != region_id
+                ):
+                    continue
+                if node_execution.status == ExecutionStatus.RUNNING:
+                    executor_id = self._running_node_xids.get(
+                        node_xid, node_execution.executor_id
+                    )
+                    running_nodes.append((node_xid, executor_id))
+                node_execution.set_status(ExecutionStatus.INTERRUPTED)
+                interrupted_node_xids.append(node_xid)
+
+            if not interrupted_node_xids:
+                return
+            await session.commit()
+            for node_xid in interrupted_node_xids:
+                self._running_node_xids.pop(node_xid, None)
+                self._suspended_node_xids.discard(node_xid)
+            for node_xid, executor_id in running_nodes:
+                executor = self._executors.get(executor_id)
+                if executor is None or executor.closing:
+                    continue
+                request_node_xid = str(node_xid)
+                request = messages.InterruptNodeRequest(
+                    node_xid=request_node_xid
+                )
+                message = messages.EngineMessage(interrupt_node=request)
+                await executor.queue.put(message)
+
     async def _execute_suspended_nodes(
         self, executor_id: UUID, *, node_xids: set[UUID] | None = None
     ):

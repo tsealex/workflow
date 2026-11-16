@@ -250,8 +250,8 @@ class NodeExecution(Base):
         if status in TerminalExecutionStatus:
             if self.ended_at is None:
                 self.ended_at = datetime.now(UTC)
-        else:
-            self.ended_at = None
+        elif status == ExecutionStatus.SUSPENDED:
+            self.executor_id = None
 
 
 class WorkflowExecutorRegistration(Base):
