@@ -29,18 +29,21 @@ class RecordingEngine(WorkflowEngine):
         super().__init__(sessions)
         self.available = asyncio.Queue()
         self.results = asyncio.Queue()
+        self.result_node_ids = asyncio.Queue()
         self.disconnected = asyncio.Queue()
         self.allow_commit = asyncio.Event()
         self.allow_commit.set()
 
-    async def executor_available(self, executor_id):
+    async def _execute_suspended_nodes(self, executor_id):
         await self.available.put(executor_id)
 
-    async def commit_node_result(self, executor_id, result):
+    async def _process_node_result(self, executor_id, node_xid, result):
+        await self.result_node_ids.put(node_xid)
         await self.results.put(result)
         await self.allow_commit.wait()
+        self._remove_running_node(self._executors[executor_id], node_xid)
 
-    async def executor_disconnected(self, executor_id):
+    async def _handle_executor_disconnected(self, executor_id):
         await self.disconnected.put(executor_id)
 
 
@@ -50,6 +53,7 @@ class RecordingExecutor(WorkflowExecutor):
         self.dispatched = asyncio.Queue()
         self.finish = asyncio.Queue()
         self.stopped = asyncio.Event()
+        self.stopped_node_xids = set()
 
     async def execute_node(self, request, inputs=None):
         await self.dispatched.put(request)
@@ -59,6 +63,7 @@ class RecordingExecutor(WorkflowExecutor):
                 raise result
             return result
         finally:
+            self.stopped_node_xids.add(request.node_xid)
             self.stopped.set()
 
 
@@ -149,7 +154,9 @@ class NamedByTheCompiler(Executable):
     async def test_execute(self):
         pass
 """})
-            self.engine.execute_node(self.registration.executor_id, request)
+            self.engine._sned_execute_node_request(
+                self.registration.executor_id, request
+            )
             result = await self.engine.results.get()
             self.assertEqual(result.status, messages.COMPLETED)
             self.assertEqual(
@@ -173,7 +180,9 @@ class Choose(Executable):
 """,
                 input_states=[],
             )
-            self.engine.execute_node(executor_id, self.new_request(decision))
+            self.engine._sned_execute_node_request(
+                executor_id, self.new_request(decision)
+            )
             result = await self.engine.results.get()
             self.assertEqual(result.status, messages.COMPLETED)
             self.assertEqual(json.loads(result.outputs), {"branch": "selected"})
@@ -209,7 +218,7 @@ class Choose(Executable):
             executor_id = self.registration.executor_id
             self.engine.allow_commit.clear()
             request = self.new_request(inputs=b'{"amount": 9007199254740993}')
-            self.engine.execute_node(executor_id, request)
+            self.engine._sned_execute_node_request(executor_id, request)
             dispatched = await self.executor.dispatched.get()
             self.assertEqual(dispatched, request)
             await self.executor.finish.put({"amount": 9007199254740993})
@@ -221,11 +230,11 @@ class Choose(Executable):
                 json.loads(result.outputs), {"amount": 9007199254740993}
             )
             with self.assertRaises(RuntimeError):
-                self.engine.execute_node(executor_id, self.new_request())
+                self.engine._sned_execute_node_request(executor_id, request)
 
             self.engine.allow_commit.set()
             self.assertEqual(await self.engine.available.get(), executor_id)
-            self.engine.shutdown_executor(executor_id)
+            self.engine._notify_engine_shutdown(executor_id)
             await task
             self.assertEqual(await self.engine.disconnected.get(), executor_id)
 
@@ -234,22 +243,116 @@ class Choose(Executable):
             await task
             self.assertEqual(await self.engine.disconnected.get(), executor_id)
 
+    async def test_connection_tracks_multiple_node_executions(self):
+        async with asyncio.timeout(5):
+            stub = WorkflowEngineStub(self.channel)
+            call = stub.connect_executor(
+                metadata=(
+                    ("authorization", f"Bearer {self.registration.token}"),
+                )
+            )
+            executor_id = await self.engine.available.get()
+            requests = [self.new_request() for _ in range(3)]
+            node_xids = [UUID(request.node_xid) for request in requests]
+            for request in requests:
+                self.engine._sned_execute_node_request(executor_id, request)
+                self.assertEqual((await call.read()).execute_node, request)
+            connection = self.engine._executors[executor_id]
+            self.assertEqual(connection.running_node_xids, set(node_xids))
+
+            result = messages.ExecuteNodeResponse(
+                node_xid=requests[1].node_xid, status=messages.COMPLETED
+            )
+            self.engine.allow_commit.clear()
+            await call.write(messages.ExecutorMessage(node_result=result))
+            self.assertEqual(await self.engine.results.get(), result)
+            with self.assertRaises(RuntimeError):
+                self.engine._sned_execute_node_request(executor_id, requests[1])
+            self.engine.allow_commit.set()
+            await self.engine.available.get()
+            self.assertEqual(
+                connection.running_node_xids, {node_xids[0], node_xids[2]}
+            )
+            self.assertEqual(
+                set(self.engine._running_node_xids),
+                connection.running_node_xids,
+            )
+
+            self.engine._sned_interrupt_node_request(executor_id, node_xids[2])
+            self.assertEqual(
+                (await call.read()).interrupt_node.node_xid,
+                requests[2].node_xid,
+            )
+            call.cancel()
+            self.assertEqual(await self.engine.disconnected.get(), executor_id)
+            self.assertEqual(connection.running_node_xids, set())
+            self.assertEqual(self.engine._running_node_xids, {})
+
+    async def test_executor_runs_and_stops_multiple_node_executions(self):
+        async with asyncio.timeout(5):
+            task = await self.connect_executor()
+            executor_id = self.registration.executor_id
+            requests = [self.new_request() for _ in range(4)]
+            for request in requests:
+                self.engine._sned_execute_node_request(executor_id, request)
+            dispatched = [
+                await self.executor.dispatched.get() for _ in requests
+            ]
+            self.assertEqual(dispatched, requests)
+
+            self.engine._sned_interrupt_node_request(
+                executor_id, UUID(requests[1].node_xid)
+            )
+            interrupted = await self.engine.results.get()
+            self.assertEqual(interrupted.node_xid, requests[1].node_xid)
+            self.assertEqual(interrupted.status, messages.INTERRUPTED)
+            await self.engine.available.get()
+            self.assertEqual(
+                self.executor.stopped_node_xids, {requests[1].node_xid}
+            )
+
+            await self.executor.finish.put({"value": 1})
+            completed = await self.engine.results.get()
+            self.assertEqual(completed.node_xid, requests[0].node_xid)
+            self.assertEqual(completed.status, messages.COMPLETED)
+            await self.engine.available.get()
+            self.assertEqual(
+                self.engine._running_node_xids,
+                {
+                    UUID(request.node_xid): executor_id
+                    for request in requests[2:]
+                },
+            )
+
+            self.engine._notify_engine_shutdown(executor_id)
+            await task
+            await self.engine.disconnected.get()
+            self.assertEqual(
+                self.executor.stopped_node_xids,
+                {request.node_xid for request in requests},
+            )
+            self.assertEqual(self.engine._running_node_xids, {})
+
     async def test_live_interrupt_and_failure_results(self):
         async with asyncio.timeout(5):
             task = await self.connect_executor()
             executor_id = self.registration.executor_id
             request = self.new_request()
 
-            self.engine.execute_node(executor_id, request)
+            self.engine._sned_execute_node_request(executor_id, request)
             await self.executor.dispatched.get()
-            self.engine.interrupt_node(executor_id, UUID(request.node_xid))
+            self.engine._sned_interrupt_node_request(
+                executor_id, UUID(request.node_xid)
+            )
             result = await self.engine.results.get()
             self.assertEqual(result.status, messages.INTERRUPTED)
             self.assertFalse(result.HasField("outputs"))
             self.assertTrue(self.executor.stopped.is_set())
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, self.new_request())
+            self.engine._sned_execute_node_request(
+                executor_id, self.new_request()
+            )
             await self.executor.dispatched.get()
             with self.assertLogs("executors", level="ERROR"):
                 await self.executor.finish.put(RuntimeError("fixture failure"))
@@ -258,7 +361,9 @@ class Choose(Executable):
                 )
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, self.new_request())
+            self.engine._sned_execute_node_request(
+                executor_id, self.new_request()
+            )
             await self.executor.dispatched.get()
             with self.assertLogs("executors", level="ERROR"):
                 await self.executor.finish.put([])
@@ -268,7 +373,7 @@ class Choose(Executable):
             await self.engine.available.get()
 
             request = self.new_request(inputs=b'{"nested": [1e400]}')
-            self.engine.execute_node(executor_id, request)
+            self.engine._sned_execute_node_request(executor_id, request)
             with self.assertLogs("executors", level="ERROR"):
                 self.assertEqual(
                     (await self.engine.results.get()).status, messages.FAILED
@@ -295,11 +400,11 @@ class Choose(Executable):
             )
             executor_id = await self.engine.available.get()
             request = self.new_request()
-            visit_id = UUID(request.node_xid)
-            request.node_xid = visit_id.hex.upper()
-            self.engine.execute_node(executor_id, request)
+            node_execution_id = UUID(request.node_xid)
+            request.node_xid = node_execution_id.hex.upper()
+            self.engine._sned_execute_node_request(executor_id, request)
             first = (await call.read()).execute_node
-            self.assertEqual(first.node_xid, str(visit_id))
+            self.assertEqual(first.node_xid, str(node_execution_id))
             await call.write(
                 messages.ExecutorMessage(
                     node_result=messages.ExecuteNodeResponse(
@@ -308,23 +413,27 @@ class Choose(Executable):
                 )
             )
             suspended = messages.ExecuteNodeResponse(
-                node_xid=visit_id.hex.upper(),
+                node_xid=node_execution_id.hex.upper(),
                 status=messages.SUSPENDED,
             )
             suspended.started_at.CopyFrom(first.started_at)
             suspended.ended_at.FromDatetime(datetime.now(UTC))
             await call.write(messages.ExecutorMessage(node_result=suspended))
-            suspended.node_xid = str(visit_id)
             self.assertEqual(await self.engine.results.get(), suspended)
+            committed_xid = await self.engine.result_node_ids.get()
+            self.assertIsInstance(committed_xid, UUID)
+            self.assertEqual(committed_xid, node_execution_id)
             await self.engine.available.get()
 
-            self.engine.execute_node(executor_id, self.new_request())
+            self.engine._sned_execute_node_request(
+                executor_id, self.new_request()
+            )
             second = (await call.read()).execute_node
             self.assertNotEqual(second.node_xid, first.node_xid)
             await call.write(messages.ExecutorMessage(node_result=suspended))
             invalid = messages.ExecuteNodeResponse(
                 node_xid=second.node_xid,
-                status=messages.COMPLETED,
+                status=messages.FAILED,
                 outputs=b'{"nested": [1e400]}',
             )
             invalid.started_at.CopyFrom(second.started_at)
@@ -337,15 +446,18 @@ class Choose(Executable):
                 rejected.exception.code(), grpc.StatusCode.INVALID_ARGUMENT
             )
             self.assertTrue(self.engine.results.empty())
+            self.assertTrue(self.engine.result_node_ids.empty())
 
     async def test_engine_shutdown_stops_active_work_before_run_returns(self):
         async with asyncio.timeout(5):
             task = await self.connect_executor()
             executor_id = self.registration.executor_id
-            self.engine.execute_node(executor_id, self.new_request())
+            self.engine._sned_execute_node_request(
+                executor_id, self.new_request()
+            )
             await self.executor.dispatched.get()
 
-            self.engine.shutdown_executor(executor_id)
+            self.engine._notify_engine_shutdown(executor_id)
             await task
             self.assertTrue(self.executor.stopped.is_set())
             self.assertEqual(await self.engine.disconnected.get(), executor_id)

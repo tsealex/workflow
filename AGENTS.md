@@ -18,8 +18,15 @@
 ## Agent rules
 
 - Keep responses concise and apply the user's corrections consistently in later work.
+- Write the minimum code necessary for user-stated or explicitly approved features.
+- Evaluate each new code block against those features; do not treat agent-made decisions as approved requirements.
+- Remove code and tests that support only hypothetical use cases or future-proofing.
+- Repeat the review and removal after each change until no unnecessary additions remain.
+- Remove unnecessary code found during requested work without waiting for another prompt, unless the removal conflicts with an explicit requirement.
+- Use explicit `for` loops for first-match searches instead of `next()` with a generator expression.
+- Gather constructor argument values before calling the constructor whenever possible.
 - Delegate all code changes to the `implementer` agent.
-- Always generate migrations with Alembic's built-in commands and edit generated files only when necessary.
+- Use Alembic to autogenerate every migration file, including its `upgrade()` and `downgrade()` logic, before making any manual edits. Edit the generated file only when necessary.
 - For code requests, do not edit documentation `.md` files.
 - For docs/specs requests, do not edit code without a separate instruction.
 - Report conflicts and await the user's final decision before editing.

@@ -62,7 +62,7 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
                         node_id=uuid4(),
                         status=status,
                         started_at=started_at,
-                        metadata={"item_idx": 0},
+                        exec_metadata={"item_idx": 0},
                     )
                     for xid, status in (
                         (self.node_xid, ExecutionStatus.RUNNING),
@@ -71,15 +71,20 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
                 ]
             )
 
-    async def test_start_suspends_running_records_and_caches_suspended_visits(
+    async def test_start_suspends_running_records_and_caches_all_node_executions(
         self,
     ):
         await self.engine.start()
 
         cache = self.engine._executions[self.workflow_xid]
         self.assertEqual(cache.workflow.status, ExecutionStatus.SUSPENDED)
-        self.assertEqual(list(cache.nodes), [self.node_xid])
-        self.assertEqual(cache.nodes[self.node_xid].metadata, {"item_idx": 0})
+        self.assertEqual(set(cache.nodes), {self.node_xid, self.completed_xid})
+        self.assertEqual(
+            cache.nodes[self.node_xid].exec_metadata, {"item_idx": 0}
+        )
+        self.assertEqual(
+            cache.nodes[self.completed_xid].status, ExecutionStatus.COMPLETED
+        )
         snapshots = self.engine._workflow_snapshots
         self.assertEqual(set(snapshots), {(self.workflow_id, 2)})
         self.assertEqual(snapshots[(self.workflow_id, 2)].ref_count, 1)
@@ -94,6 +99,7 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_cached_records_can_be_read_and_updated_after_rollback(self):
         await self.engine.start()
+        cache = self.engine._executions[self.workflow_xid]
         async with self.sessions() as session:
             workflow = await self.engine._get_workflow_execution(
                 session, self.workflow_xid
@@ -102,32 +108,32 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
                 session, self.workflow_xid, self.node_xid
             )
             workflow.states = {"item": 1}
-            node.metadata = {"item_idx": 1}
+            node.exec_metadata = {"item_idx": 1}
             await session.rollback()
 
         async with self.sessions.begin() as session:
             self.assertIs(
                 await self.engine._get_workflow_execution(
-                    session, self.workflow_xid
+                    session, self.workflow_xid, cache=cache
                 ),
                 workflow,
             )
             self.assertIs(
                 await self.engine._get_node_execution(
-                    session, self.workflow_xid, self.node_xid
+                    session, self.workflow_xid, self.node_xid, cache=cache
                 ),
                 node,
             )
             self.assertEqual(workflow.states, {"item": 0})
-            self.assertEqual(node.metadata, {"item_idx": 0})
-            node.metadata = {"item_idx": 2}
-        self.assertEqual(node.metadata, {"item_idx": 2})
+            self.assertEqual(node.exec_metadata, {"item_idx": 0})
+            node.exec_metadata = {"item_idx": 2}
+        self.assertEqual(node.exec_metadata, {"item_idx": 2})
 
         async with self.sessions() as session:
             stored = await session.get(NodeExecution, self.node_xid)
-            self.assertEqual(stored.metadata, {"item_idx": 2})
+            self.assertEqual(stored.exec_metadata, {"item_idx": 2})
 
-    async def test_create_node_execution_saves_and_caches_each_visit(self):
+    async def test_create_node_execution_saves_and_caches_each_execution(self):
         await self.engine.start()
         inputs = {"item": {"quantity": 2}}
         node_id, executor_id = uuid4(), uuid4()
@@ -139,32 +145,74 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
             second = await self.engine.create_node_execution(
                 session, self.workflow_xid, node_id, None, {}
             )
-            self.assertEqual(list(cached), [self.node_xid])
-        self.assertNotEqual(first, second)
+            self.assertIsInstance(first, NodeExecution)
+            self.assertIsInstance(second, NodeExecution)
+            self.assertEqual(first.status, ExecutionStatus.RUNNING)
+            self.assertEqual(set(cached), {self.node_xid, self.completed_xid})
+        self.assertNotEqual(first.xid, second.xid)
         inputs["item"]["quantity"] = 3
 
-        self.assertEqual(list(cached), [self.node_xid, first, second])
-        self.assertEqual(cached[first].inputs, {"item": {"quantity": 2}})
-        self.assertEqual(cached[first].started_at.tzinfo, UTC)
+        self.assertEqual(
+            set(cached),
+            {self.node_xid, self.completed_xid, first.xid, second.xid},
+        )
+        self.assertIs(cached[first.xid], first)
+        self.assertIs(cached[second.xid], second)
+        self.assertEqual(first.inputs, {"item": {"quantity": 2}})
+        self.assertEqual(first.started_at.tzinfo, UTC)
 
         async with self.sessions() as session:
-            saved = await session.get(NodeExecution, first)
+            saved = await session.get(NodeExecution, first.xid)
             self.assertEqual(saved.workflow_xid, self.workflow_xid)
             self.assertEqual(saved.node_id, node_id)
             self.assertEqual(saved.executor_id, executor_id)
-            self.assertEqual(saved.inputs, cached[first].inputs)
+            self.assertEqual(saved.inputs, first.inputs)
             self.assertEqual(saved.status, ExecutionStatus.RUNNING)
-            self.assertIsNone(saved.metadata)
+            self.assertEqual(saved.prev_xids, [])
+            self.assertIsNone(saved.exec_metadata)
             self.assertIsNone(saved.ended_at)
-            other = await session.get(NodeExecution, second)
+            other = await session.get(NodeExecution, second.xid)
             self.assertEqual(other.node_id, node_id)
             self.assertIsNone(other.executor_id)
 
         async with self.sessions() as session:
             node = await self.engine._get_node_execution(
-                session, self.workflow_xid, first
+                session, self.workflow_xid, first.xid
             )
-            self.assertIs(node, cached[first])
+            self.assertIs(node, first)
+
+    async def test_predecessor_ids_survive_storage_and_restart(self):
+        await self.engine.start()
+        predecessors = [self.node_xid, self.completed_xid]
+        async with self.sessions.begin() as session:
+            created = await self.engine.create_node_execution(
+                session,
+                self.workflow_xid,
+                uuid4(),
+                None,
+                {},
+                prev_xids=predecessors,
+            )
+            predecessors.clear()
+
+        xid = created.xid
+        expected = [self.node_xid, self.completed_xid]
+        cached = self.engine._executions[self.workflow_xid].nodes[xid]
+        self.assertIs(cached, created)
+        self.assertEqual(cached.prev_xids, expected)
+        additional_predecessor = uuid4()
+        async with self.sessions.begin() as session:
+            saved = await session.get(NodeExecution, xid)
+            self.assertEqual(saved.prev_xids, expected)
+            saved.prev_xids.append(additional_predecessor)
+            initial = await session.get(NodeExecution, self.node_xid)
+            self.assertEqual(initial.prev_xids, [])
+
+        expected.append(additional_predecessor)
+        restarted = WorkflowEngine(self.sessions)
+        await restarted.start()
+        recovered = restarted._executions[self.workflow_xid].nodes[xid]
+        self.assertEqual(recovered.prev_xids, expected)
 
     async def test_create_node_execution_leaves_cache_unchanged_on_db_failure(
         self,
@@ -177,42 +225,44 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
                     await self.engine.create_node_execution(
                         session, self.workflow_xid, uuid4(), None, {}
                     )
-        self.assertEqual(list(cache.nodes), [self.node_xid])
+        self.assertEqual(set(cache.nodes), {self.node_xid, self.completed_xid})
 
-    async def test_status_updates_record_end_times_and_evict_on_commit(self):
+    async def test_status_updates_keep_node_executions_until_workflow_ends(
+        self,
+    ):
         await self.engine.start()
         cache = self.engine._executions[self.workflow_xid]
         async with self.sessions.begin() as session:
-            await self.engine.update_node_execution_status(
-                session,
-                self.workflow_xid,
-                self.node_xid,
-                ExecutionStatus.INTERRUPTED,
+            node = await self.engine._get_node_execution(
+                session, self.workflow_xid, self.node_xid
             )
+            node.set_status(ExecutionStatus.INTERRUPTED)
             first_end = cache.nodes[self.node_xid].ended_at
             self.assertEqual(first_end.tzinfo, UTC)
-            await self.engine.update_node_execution_status(
-                session,
-                self.workflow_xid,
-                self.node_xid,
-                ExecutionStatus.INTERRUPTED,
+            node = await self.engine._get_node_execution(
+                session, self.workflow_xid, self.node_xid
             )
+            node.set_status(ExecutionStatus.INTERRUPTED)
             self.assertEqual(cache.nodes[self.node_xid].ended_at, first_end)
             self.assertIn(self.workflow_xid, self.engine._executions)
-            self.assertEqual(len(cache.nodes), 1)
+            self.assertEqual(len(cache.nodes), 2)
 
-        self.assertEqual(cache.nodes, {})
+        self.assertEqual(set(cache.nodes), {self.node_xid, self.completed_xid})
+        self.assertEqual(
+            cache.nodes[self.node_xid].status, ExecutionStatus.INTERRUPTED
+        )
         async with self.sessions.begin() as session:
-            await self.engine.update_workflow_execution_status(
-                session, self.workflow_xid, ExecutionStatus.FAILED
+            workflow = await self.engine._get_workflow_execution(
+                session, self.workflow_xid
             )
+            workflow.set_status(ExecutionStatus.FAILED)
             staged = await self.engine.create_node_execution(
                 session, self.workflow_xid, uuid4(), None, {}
             )
             self.assertIn(self.workflow_xid, self.engine._executions)
 
         self.assertNotIn(self.workflow_xid, self.engine._executions)
-        self.assertEqual(cache.nodes, {})
+        self.assertNotIn(staged.xid, cache.nodes)
         async with self.sessions() as session:
             node = await session.get(NodeExecution, self.node_xid)
             workflow = await session.get(WorkflowExecution, self.workflow_xid)
@@ -220,7 +270,11 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.status, ExecutionStatus.INTERRUPTED)
             self.assertEqual(workflow.status, ExecutionStatus.FAILED)
             self.assertIsNotNone(workflow.ended_at)
-            self.assertIsNotNone(await session.get(NodeExecution, staged))
+            self.assertIsNotNone(await session.get(NodeExecution, staged.xid))
+
+        restarted = WorkflowEngine(self.sessions)
+        await restarted.start()
+        self.assertNotIn(self.workflow_xid, restarted._executions)
 
     async def test_rollback_discards_pending_additions_and_terminal_evictions(
         self,
@@ -229,23 +283,24 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
         cache = self.engine._executions[self.workflow_xid]
         original = cache.nodes[self.node_xid]
         async with self.sessions() as session:
-            xid = await self.engine.create_node_execution(
+            created = await self.engine.create_node_execution(
                 session, self.workflow_xid, uuid4(), None, {}
             )
-            await self.engine.update_node_execution_status(
-                session,
-                self.workflow_xid,
-                self.node_xid,
-                ExecutionStatus.FAILED,
+            xid = created.xid
+            node = await self.engine._get_node_execution(
+                session, self.workflow_xid, self.node_xid
             )
-            await self.engine.update_workflow_execution_status(
-                session, self.workflow_xid, ExecutionStatus.COMPLETED
+            node.set_status(ExecutionStatus.FAILED)
+            workflow = await self.engine._get_workflow_execution(
+                session, self.workflow_xid
             )
+            workflow.set_status(ExecutionStatus.COMPLETED)
             await session.flush()
             await session.rollback()
 
         self.assertIs(self.engine._executions[self.workflow_xid], cache)
-        self.assertEqual(cache.nodes, {self.node_xid: original})
+        self.assertEqual(set(cache.nodes), {self.node_xid, self.completed_xid})
+        self.assertIs(cache.nodes[self.node_xid], original)
         async with self.sessions() as session:
             self.assertIsNone(await session.get(NodeExecution, xid))
             node = await self.engine._get_node_execution(
@@ -259,51 +314,3 @@ class EngineRecoveryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(workflow.status, ExecutionStatus.SUSPENDED)
             self.assertIsNone(node.ended_at)
             self.assertIsNone(workflow.ended_at)
-
-    async def test_savepoints_publish_final_node_status_only_after_outer_commit(
-        self,
-    ):
-        await self.engine.start()
-        cache = self.engine._executions[self.workflow_xid]
-        async with self.sessions.begin() as session:
-            rolled_back = await self.engine.create_node_execution(
-                session, self.workflow_xid, uuid4(), None, {}
-            )
-            committed = await self.engine.create_node_execution(
-                session, self.workflow_xid, uuid4(), None, {}
-            )
-            async with session.begin_nested() as savepoint:
-                await self.engine.update_node_execution_status(
-                    session,
-                    self.workflow_xid,
-                    rolled_back,
-                    ExecutionStatus.FAILED,
-                )
-                await session.flush()
-                await savepoint.rollback()
-            async with session.begin_nested():
-                await self.engine.update_node_execution_status(
-                    session,
-                    self.workflow_xid,
-                    committed,
-                    ExecutionStatus.COMPLETED,
-                )
-                await self.engine.update_node_execution_status(
-                    session,
-                    self.workflow_xid,
-                    committed,
-                    ExecutionStatus.SUSPENDED,
-                )
-            self.assertEqual(list(cache.nodes), [self.node_xid])
-
-        async with self.sessions() as session:
-            resumed = await self.engine._get_node_execution(
-                session, self.workflow_xid, rolled_back
-            )
-            suspended = await self.engine._get_node_execution(
-                session, self.workflow_xid, committed
-            )
-            self.assertEqual(resumed.status, ExecutionStatus.RUNNING)
-            self.assertIsNone(resumed.ended_at)
-            self.assertEqual(suspended.status, ExecutionStatus.SUSPENDED)
-            self.assertIsNone(suspended.ended_at)

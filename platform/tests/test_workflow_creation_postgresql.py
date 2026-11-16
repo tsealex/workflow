@@ -2,16 +2,22 @@ import asyncio
 import os
 import unittest
 from datetime import UTC, datetime
+from unittest.mock import patch
 from uuid import uuid4
 
 from jsonschema.exceptions import ValidationError
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from engine import WorkflowEngine
 from models import (
     ExecutionStatus,
+    NodeExecution,
     Workflow,
     WorkflowExecution,
     WorkflowSnapshot,
@@ -58,6 +64,15 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
     async def delete_workflow_records(self):
         async with self.sessions.begin() as session:
             await session.execute(
+                delete(NodeExecution).where(
+                    NodeExecution.workflow_xid.in_(
+                        select(WorkflowExecution.xid).where(
+                            WorkflowExecution.workflow_id == self.workflow_id
+                        )
+                    )
+                )
+            )
+            await session.execute(
                 delete(WorkflowExecution).where(
                     WorkflowExecution.workflow_id == self.workflow_id
                 )
@@ -87,23 +102,29 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
             self.engine.create_workflow_execution(self.workflow_id, inputs),
             other_engine.create_workflow_execution(self.workflow_id, inputs),
         )
-        self.assertNotEqual(first, second)
+        self.assertIsInstance(first, WorkflowExecution)
+        self.assertIsInstance(second, WorkflowExecution)
+        self.assertNotEqual(first.xid, second.xid)
         self.assertEqual(await self.snapshot_count(), 2)
         snapshot_id = (self.workflow_id, 1)
-        snapshots = [
-            engine._workflow_snapshots[snapshot_id]
-            for engine in (self.engine, other_engine)
-        ]
-        self.assertEqual(
-            sorted(snapshot.ref_count for snapshot in snapshots), [1, 2]
-        )
+        self.assertIn(snapshot_id, self.engine._workflow_snapshots)
+        self.assertIn(snapshot_id, other_engine._workflow_snapshots)
         inputs["item"]["quantity"] = 3
-        cached = self.engine._executions[first]
+        cached = self.engine._executions[first.xid]
+        self.assertIs(cached.workflow, first)
+        self.assertIs(other_engine._executions[second.xid].workflow, second)
+        self.assertEqual(first.status, ExecutionStatus.RUNNING)
+        self.assertEqual(second.status, ExecutionStatus.RUNNING)
         self.assertEqual(cached.workflow.states, {"item": {"quantity": 2}})
-        self.assertEqual(cached.nodes, {})
+        root = self.engine._workflow_snapshots[snapshot_id].get_root()
+        self.assertEqual(
+            {node.node_id: node.status for node in cached.nodes.values()},
+            {root.id: ExecutionStatus.RUNNING},
+        )
+        self.assertEqual(len(cached.nodes), 1)
 
         async with self.sessions() as session:
-            execution = await session.get(WorkflowExecution, first)
+            execution = await session.get(WorkflowExecution, first.xid)
             snapshot = await session.get(
                 WorkflowSnapshot, (self.workflow_id, 1)
             )
@@ -115,6 +136,32 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot.root, workflow.root_json)
             self.assertEqual(snapshot.states, workflow.states)
 
+    async def test_cached_snapshot_skips_lookup_and_survives_invalid_inputs(
+        self,
+    ):
+        await self.engine.create_workflow_execution(
+            self.workflow_id, {"item": {"quantity": 1}}
+        )
+        snapshot_id = self.workflow_id, 1
+        original_get = AsyncSession.get
+
+        async def get_without_snapshot(session, entity, *args, **kwargs):
+            self.assertIsNot(entity, WorkflowSnapshot)
+            return await original_get(session, entity, *args, **kwargs)
+
+        with patch.object(AsyncSession, "get", get_without_snapshot):
+            await self.engine.create_workflow_execution(
+                self.workflow_id, {"item": {"quantity": 2}}
+            )
+            cached = self.engine._workflow_snapshots[snapshot_id]
+            with self.assertRaises(ValidationError):
+                await self.engine.create_workflow_execution(
+                    self.workflow_id, {}
+                )
+        self.assertIs(self.engine._workflow_snapshots[snapshot_id], cached)
+        self.assertEqual(await self.snapshot_count(), 2)
+        self.assertEqual(len(self.engine._executions), 2)
+
     async def test_invalid_start_creates_no_snapshot_or_cache(self):
         with self.assertRaises(ValidationError):
             await self.engine.create_workflow_execution(self.workflow_id, {})
@@ -125,31 +172,31 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine._workflow_snapshots, {})
 
     async def test_workflow_status_update_releases_snapshot_on_commit(self):
-        xid = await self.engine.create_workflow_execution(
+        execution = await self.engine.create_workflow_execution(
             self.workflow_id, {"item": {"quantity": 2}}
         )
+        xid = execution.xid
         async with self.sessions() as session:
-            await self.engine.update_workflow_execution_status(
-                session, xid, ExecutionStatus.FAILED
-            )
+            workflow = await self.engine._get_workflow_execution(session, xid)
+            workflow.set_status(ExecutionStatus.FAILED)
             await session.flush()
             await session.rollback()
         self.assertEqual(await self.snapshot_count(), 1)
         self.assertIn(xid, self.engine._executions)
 
         async with self.sessions.begin() as session:
-            await self.engine.update_workflow_execution_status(
-                session, xid, ExecutionStatus.COMPLETED
-            )
+            workflow = await self.engine._get_workflow_execution(session, xid)
+            workflow.set_status(ExecutionStatus.COMPLETED)
             self.assertIn(xid, self.engine._executions)
         self.assertEqual(await self.snapshot_count(), 0)
         self.assertNotIn(xid, self.engine._executions)
 
     async def test_trigger_counts_active_transitions_deletes_and_rollback(self):
         inputs = {"item": {"quantity": 2}}
-        xid = await self.engine.create_workflow_execution(
+        execution = await self.engine.create_workflow_execution(
             self.workflow_id, inputs
         )
+        xid = execution.xid
         self.assertEqual(await self.snapshot_count(), 1)
 
         for status, expected in (
@@ -171,12 +218,18 @@ class WorkflowCreationPostgreSQLTest(unittest.IsolatedAsyncioTestCase):
 
         async with self.sessions() as session:
             await session.execute(
+                delete(NodeExecution).where(NodeExecution.workflow_xid == xid)
+            )
+            await session.execute(
                 delete(WorkflowExecution).where(WorkflowExecution.xid == xid)
             )
             await session.rollback()
         self.assertEqual(await self.snapshot_count(), 1)
 
         async with self.sessions.begin() as session:
+            await session.execute(
+                delete(NodeExecution).where(NodeExecution.workflow_xid == xid)
+            )
             await session.execute(
                 delete(WorkflowExecution).where(WorkflowExecution.xid == xid)
             )

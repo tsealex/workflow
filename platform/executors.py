@@ -223,18 +223,21 @@ class WorkflowExecutor:
         )
         receive = asyncio.create_task(call.read())
         stop = asyncio.create_task(self._stop.wait())
-        attempt: _NodeAttempt | None = None
+        attempts: dict[str, _NodeAttempt] = {}
         try:
             while True:
                 pending = [receive, stop]
-                if attempt is not None:
-                    pending.append(attempt.execution)
+                pending.extend(
+                    attempt.execution for attempt in attempts.values()
+                )
                 finished, _ = await asyncio.wait(
                     pending, return_when=asyncio.FIRST_COMPLETED
                 )
                 if stop in finished:
-                    if attempt is not None:
-                        await attempt.stop()
+                    await asyncio.gather(
+                        *(attempt.stop() for attempt in attempts.values())
+                    )
+                    attempts.clear()
                     if not call.done():
                         await call.write(
                             messages.ExecutorMessage(
@@ -250,39 +253,44 @@ class WorkflowExecutor:
                     payload = message.WhichOneof("payload")
                     if payload == "shutdown":
                         return
-                    if payload == "execute_node" and attempt is None:
+                    if payload == "execute_node":
                         request = message.execute_node
-                        attempt = _NodeAttempt(
+                        if request.node_xid in attempts:
+                            raise RuntimeError(
+                                "Received a duplicate node dispatch."
+                            )
+                        attempts[request.node_xid] = _NodeAttempt(
                             request,
                             datetime.now(UTC),
                             asyncio.create_task(self._execute_node(request)),
                         )
                     elif payload == "interrupt_node":
-                        if (
-                            attempt is not None
-                            and attempt.request.node_xid
-                            == message.interrupt_node.node_xid
-                        ):
+                        attempt = attempts.get(message.interrupt_node.node_xid)
+                        if attempt is not None:
                             attempt.cancel()
                     else:
                         raise RuntimeError(
-                            "Received an invalid engine message or a second dispatch."
+                            "Received an invalid engine message."
                         )
                     receive = asyncio.create_task(call.read())
-                if attempt is not None and attempt.execution in finished:
-                    await call.write(
-                        messages.ExecutorMessage(
-                            node_result=self._node_result(attempt)
+                for node_xid, attempt in list(attempts.items()):
+                    if attempt.execution in finished:
+                        await call.write(
+                            messages.ExecutorMessage(
+                                node_result=self._node_result(attempt)
+                            )
                         )
-                    )
-                    attempt = None
+                        del attempts[node_xid]
         finally:
             call.cancel()
             receive.cancel()
             stop.cancel()
-            if attempt is not None:
-                await attempt.stop()
-            await asyncio.gather(receive, stop, return_exceptions=True)
+            await asyncio.gather(
+                receive,
+                stop,
+                *(attempt.stop() for attempt in attempts.values()),
+                return_exceptions=True,
+            )
 
     def shutdown(self) -> None:
         """Ask the active stream to stop work and report executor shutdown."""

@@ -182,25 +182,23 @@ class WaitNode(BaseNode):
         return self
 
 
-class _RegionBoundary(BaseModel):
-    id: UUID = Field(default_factory=uuid4)
-
-
 class ExecMetadata(BaseModel):
     """Store the data needed to resume a node execution."""
 
+    branch: str | None = None
+
 
 class RegionExecMetadata(ExecMetadata):
-    """Store the index of the current collection item for a region visit."""
+    """Store the index of the current collection item for a region execution."""
 
-    item_idx: int = Field(ge=0, strict=True)
+    item_idx: int = Field(default=0, ge=0, strict=True)
 
 
 class RegionNode(BaseNode):
     nodes: list[Node]
     edges: list[Edge]
-    initial: _RegionBoundary = Field(default_factory=_RegionBoundary)
-    final: _RegionBoundary = Field(default_factory=_RegionBoundary)
+    initial_id: UUID = Field(default_factory=uuid4)
+    final_id: UUID = Field(default_factory=uuid4)
     collection_state: str | None = None
     item_state: str | None = None
     type: Literal["region"] = Field(default="region", frozen=True)
@@ -211,7 +209,7 @@ class RegionNode(BaseNode):
 
         An item name must be nonempty and contain no dots.
         """
-        if self.initial.id == self.final.id:
+        if self.initial_id == self.final_id:
             raise ValueError("Initial and final nodes must have distinct IDs.")
         if self.collection_state is not None and self.item_state is None:
             raise ValueError("collection_state requires item_state.")
