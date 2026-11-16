@@ -2,6 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
+      <module fileurl="file://$PROJECT_DIR$/platform/platform.iml" filepath="$PROJECT_DIR$/platform/platform.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/workflow.iml" filepath="$PROJECT_DIR$/.idea/workflow.iml" />
     </modules>
   </component>

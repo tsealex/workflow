@@ -1,5 +1,10 @@
 ## Documentation
 
+- Apply these rules to documentation pages, code comments, and docstrings.
+- Name the specific object, such as a workflow execution or node execution, instead of using vague nouns such as "records."
+- Describe a method's behavior in terms of what one call does to its inputs and affected objects.
+- Use plain language that readers can understand without knowing the implementation.
+- Establish the relevant context before describing technical behavior; for example, say "after the result is saved to the database" instead of "after the transaction commits."
 - Include only user-stated or explicitly approved requirements. Do not turn assumptions into restrictions or add unapproved proposals and open decisions.
 - Raise crucial unacknowledged suggestions in the response after editing the docs.
 - Give readers the prerequisites, steps, and expected results for their task.
@@ -25,6 +30,8 @@
 - Remove unnecessary code found during requested work without waiting for another prompt, unless the removal conflicts with an explicit requirement.
 - Use explicit `for` loops for first-match searches instead of `next()` with a generator expression.
 - Gather constructor argument values before calling the constructor whenever possible.
+- Open SQLAlchemy sessions with `async with self._sessions() as session` instead of transaction context managers such as `self._sessions.begin()` or `session.begin()`.
+- Call `await session.commit()` explicitly when saving database changes; read-only queries do not require a commit.
 - Delegate all code changes to the `implementer` agent.
 - Use Alembic to autogenerate every migration file, including its `upgrade()` and `downgrade()` logic, before making any manual edits. Edit the generated file only when necessary.
 - For code requests, do not edit documentation `.md` files.

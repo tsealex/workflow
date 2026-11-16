@@ -116,15 +116,11 @@ def _save_executor_credentials(
             temporary_path.unlink(missing_ok=True)
 
 
-class Machine:
-    """Physical or virtual computer with its own execution environment."""
-
-
 async def _complete_credential_io(
-    operation: Callable[..., _CredentialResult], *arguments: object
+    operation: Callable[..., _CredentialResult], *args: object
 ) -> _CredentialResult:
     """Finish local IO before the caller releases the credential lock."""
-    task = asyncio.create_task(asyncio.to_thread(operation, *arguments))
+    task = asyncio.create_task(asyncio.to_thread(operation, *args))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -335,6 +331,7 @@ class WorkflowExecutor:
         request = attempt.request
         result = messages.ExecuteNodeResponse(
             node_xid=request.node_xid,
+            workflow_xid=request.workflow_xid,
             status=messages.COMPLETED,
         )
         result.started_at.FromDatetime(attempt.started_at)

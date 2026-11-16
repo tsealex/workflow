@@ -41,6 +41,7 @@ message ExecuteNodeRequest {
   google.protobuf.Struct node = 3;
   // UTF-8 JSON object. The encoding preserves integer precision.
   optional bytes inputs = 4;
+  string workflow_xid = 5;
 }
 
 message InterruptNodeRequest {
@@ -54,6 +55,7 @@ message ExecuteNodeResponse {
   optional bytes outputs = 3;
   google.protobuf.Timestamp started_at = 4;
   google.protobuf.Timestamp ended_at = 5;
+  string workflow_xid = 6;
 }
 
 enum ExecutionStatus {

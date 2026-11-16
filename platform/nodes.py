@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from math import isfinite
 from typing import Annotated, Literal, Self, TypeAlias, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -78,6 +78,14 @@ class EventSelector(BaseModel):
     filter: FilterMap | None = None
 
 
+class NodeType(StrEnum):
+    ACTION = "action"
+    DECISION = "decision"
+    SIGNAL = "signal"
+    WAIT = "wait"
+    REGION = "region"
+
+
 class BaseNode(BaseModel):
     """Provide the identity and name shared by workflow nodes."""
 
@@ -125,7 +133,7 @@ class ActionNode(_InputStateNode):
     description: str
     code: str
     output_states: list[str]
-    type: Literal["action"] = Field(default="action", frozen=True)
+    type: Literal[NodeType.ACTION] = Field(default=NodeType.ACTION, frozen=True)
 
     def has_code(self) -> bool:
         """Report that this node type has a Python code field."""
@@ -136,7 +144,9 @@ class DecisionNode(_InputStateNode):
     description: str
     branches: list[str]
     code: str
-    type: Literal["decision"] = Field(default="decision", frozen=True)
+    type: Literal[NodeType.DECISION] = Field(
+        default=NodeType.DECISION, frozen=True
+    )
 
     def has_code(self) -> bool:
         """Report that this node type has a Python code field."""
@@ -156,7 +166,7 @@ class DecisionNode(_InputStateNode):
 
 class SignalNode(_InputStateNode):
     event_id: UUID
-    type: Literal["signal"] = Field(default="signal", frozen=True)
+    type: Literal[NodeType.SIGNAL] = Field(default=NodeType.SIGNAL, frozen=True)
 
 
 class WaitNode(BaseNode):
@@ -164,7 +174,7 @@ class WaitNode(BaseNode):
     until: datetime | None = None
     event: EventSelector | None = None
     output_states: list[str] | None = None
-    type: Literal["wait"] = Field(default="wait", frozen=True)
+    type: Literal[NodeType.WAIT] = Field(default=NodeType.WAIT, frozen=True)
 
     @model_validator(mode="after")
     def validate_constraints(self) -> Self:
@@ -185,7 +195,7 @@ class WaitNode(BaseNode):
 class ExecMetadata(BaseModel):
     """Store the data needed to resume a node execution."""
 
-    branch: str | None = None
+    pass
 
 
 class RegionExecMetadata(ExecMetadata):
@@ -197,20 +207,16 @@ class RegionExecMetadata(ExecMetadata):
 class RegionNode(BaseNode):
     nodes: list[Node]
     edges: list[Edge]
-    initial_id: UUID = Field(default_factory=uuid4)
-    final_id: UUID = Field(default_factory=uuid4)
     collection_state: str | None = None
     item_state: str | None = None
-    type: Literal["region"] = Field(default="region", frozen=True)
+    type: Literal[NodeType.REGION] = Field(default=NodeType.REGION, frozen=True)
 
     @model_validator(mode="after")
     def validate_constraints(self) -> Self:
-        """Require distinct boundary IDs and an item name for collections.
+        """Require an item name for collections.
 
         An item name must be nonempty and contain no dots.
         """
-        if self.initial_id == self.final_id:
-            raise ValueError("Initial and final nodes must have distinct IDs.")
         if self.collection_state is not None and self.item_state is None:
             raise ValueError("collection_state requires item_state.")
         if self.item_state is not None and (

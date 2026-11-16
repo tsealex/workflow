@@ -25,7 +25,7 @@ from google.protobuf import (
 )
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x0f\x65xecution.proto\x12\x14workflow.executor.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"a\n\x17RegisterExecutorRequest\x12\x18\n\x0b\x65xecutor_id\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x12\n\x05token\x18\x02 \x01(\tH\x01\x88\x01\x01\x42\x0e\n\x0c_executor_idB\x08\n\x06_token">\n\x18RegisterExecutorResponse\x12\x13\n\x0b\x65xecutor_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\x02 \x01(\t"\xdc\x01\n\rEngineMessage\x12@\n\x0c\x65xecute_node\x18\x01 \x01(\x0b\x32(.workflow.executor.v1.ExecuteNodeRequestH\x00\x12\x44\n\x0einterrupt_node\x18\x02 \x01(\x0b\x32*.workflow.executor.v1.InterruptNodeRequestH\x00\x12\x38\n\x08shutdown\x18\x03 \x01(\x0b\x32$.workflow.executor.v1.EngineShutdownH\x00\x42\t\n\x07payload"\x9a\x01\n\x0f\x45xecutorMessage\x12@\n\x0bnode_result\x18\x01 \x01(\x0b\x32).workflow.executor.v1.ExecuteNodeResponseH\x00\x12:\n\x08shutdown\x18\x02 \x01(\x0b\x32&.workflow.executor.v1.ExecutorShutdownH\x00\x42\t\n\x07payload"\x9d\x01\n\x12\x45xecuteNodeRequest\x12\x10\n\x08node_xid\x18\x01 \x01(\t\x12.\n\nstarted_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12%\n\x04node\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x13\n\x06inputs\x18\x04 \x01(\x0cH\x00\x88\x01\x01\x42\t\n\x07_inputs"(\n\x14InterruptNodeRequest\x12\x10\n\x08node_xid\x18\x01 \x01(\t"\xde\x01\n\x13\x45xecuteNodeResponse\x12\x10\n\x08node_xid\x18\x01 \x01(\t\x12\x35\n\x06status\x18\x02 \x01(\x0e\x32%.workflow.executor.v1.ExecutionStatus\x12\x14\n\x07outputs\x18\x03 \x01(\x0cH\x00\x88\x01\x01\x12.\n\nstarted_at\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12,\n\x08\x65nded_at\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.TimestampB\n\n\x08_outputs"\x10\n\x0e\x45ngineShutdown"\x12\n\x10\x45xecutorShutdown*{\n\x0f\x45xecutionStatus\x12 \n\x1c\x45XECUTION_STATUS_UNSPECIFIED\x10\x00\x12\x0b\n\x07RUNNING\x10\x01\x12\n\n\x06\x46\x41ILED\x10\x02\x12\r\n\tSUSPENDED\x10\x03\x12\x0f\n\x0bINTERRUPTED\x10\x04\x12\r\n\tCOMPLETED\x10\x05\x32\xe8\x01\n\x0eWorkflowEngine\x12r\n\x11register_executor\x12-.workflow.executor.v1.RegisterExecutorRequest\x1a..workflow.executor.v1.RegisterExecutorResponse\x12\x62\n\x10\x63onnect_executor\x12%.workflow.executor.v1.ExecutorMessage\x1a#.workflow.executor.v1.EngineMessage(\x01\x30\x01\x62\x06proto3'
+    b'\n\x0f\x65xecution.proto\x12\x14workflow.executor.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto"a\n\x17RegisterExecutorRequest\x12\x18\n\x0b\x65xecutor_id\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x12\n\x05token\x18\x02 \x01(\tH\x01\x88\x01\x01\x42\x0e\n\x0c_executor_idB\x08\n\x06_token">\n\x18RegisterExecutorResponse\x12\x13\n\x0b\x65xecutor_id\x18\x01 \x01(\t\x12\r\n\x05token\x18\x02 \x01(\t"\xdc\x01\n\rEngineMessage\x12@\n\x0c\x65xecute_node\x18\x01 \x01(\x0b\x32(.workflow.executor.v1.ExecuteNodeRequestH\x00\x12\x44\n\x0einterrupt_node\x18\x02 \x01(\x0b\x32*.workflow.executor.v1.InterruptNodeRequestH\x00\x12\x38\n\x08shutdown\x18\x03 \x01(\x0b\x32$.workflow.executor.v1.EngineShutdownH\x00\x42\t\n\x07payload"\x9a\x01\n\x0f\x45xecutorMessage\x12@\n\x0bnode_result\x18\x01 \x01(\x0b\x32).workflow.executor.v1.ExecuteNodeResponseH\x00\x12:\n\x08shutdown\x18\x02 \x01(\x0b\x32&.workflow.executor.v1.ExecutorShutdownH\x00\x42\t\n\x07payload"\xb3\x01\n\x12\x45xecuteNodeRequest\x12\x10\n\x08node_xid\x18\x01 \x01(\t\x12.\n\nstarted_at\x18\x02 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12%\n\x04node\x18\x03 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x13\n\x06inputs\x18\x04 \x01(\x0cH\x00\x88\x01\x01\x12\x14\n\x0cworkflow_xid\x18\x05 \x01(\tB\t\n\x07_inputs"(\n\x14InterruptNodeRequest\x12\x10\n\x08node_xid\x18\x01 \x01(\t"\xf4\x01\n\x13\x45xecuteNodeResponse\x12\x10\n\x08node_xid\x18\x01 \x01(\t\x12\x35\n\x06status\x18\x02 \x01(\x0e\x32%.workflow.executor.v1.ExecutionStatus\x12\x14\n\x07outputs\x18\x03 \x01(\x0cH\x00\x88\x01\x01\x12.\n\nstarted_at\x18\x04 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12,\n\x08\x65nded_at\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x14\n\x0cworkflow_xid\x18\x06 \x01(\tB\n\n\x08_outputs"\x10\n\x0e\x45ngineShutdown"\x12\n\x10\x45xecutorShutdown*{\n\x0f\x45xecutionStatus\x12 \n\x1c\x45XECUTION_STATUS_UNSPECIFIED\x10\x00\x12\x0b\n\x07RUNNING\x10\x01\x12\n\n\x06\x46\x41ILED\x10\x02\x12\r\n\tSUSPENDED\x10\x03\x12\x0f\n\x0bINTERRUPTED\x10\x04\x12\r\n\tCOMPLETED\x10\x05\x32\xe8\x01\n\x0eWorkflowEngine\x12r\n\x11register_executor\x12-.workflow.executor.v1.RegisterExecutorRequest\x1a..workflow.executor.v1.RegisterExecutorResponse\x12\x62\n\x10\x63onnect_executor\x12%.workflow.executor.v1.ExecutorMessage\x1a#.workflow.executor.v1.EngineMessage(\x01\x30\x01\x62\x06proto3'
 )
 
 _globals = globals()
@@ -33,8 +33,8 @@ _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "execution_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
     DESCRIPTOR._loaded_options = None
-    _globals["_EXECUTIONSTATUS"]._serialized_start = 1112
-    _globals["_EXECUTIONSTATUS"]._serialized_end = 1235
+    _globals["_EXECUTIONSTATUS"]._serialized_start = 1156
+    _globals["_EXECUTIONSTATUS"]._serialized_end = 1279
     _globals["_REGISTEREXECUTORREQUEST"]._serialized_start = 104
     _globals["_REGISTEREXECUTORREQUEST"]._serialized_end = 201
     _globals["_REGISTEREXECUTORRESPONSE"]._serialized_start = 203
@@ -44,15 +44,15 @@ if not _descriptor._USE_C_DESCRIPTORS:
     _globals["_EXECUTORMESSAGE"]._serialized_start = 491
     _globals["_EXECUTORMESSAGE"]._serialized_end = 645
     _globals["_EXECUTENODEREQUEST"]._serialized_start = 648
-    _globals["_EXECUTENODEREQUEST"]._serialized_end = 805
-    _globals["_INTERRUPTNODEREQUEST"]._serialized_start = 807
-    _globals["_INTERRUPTNODEREQUEST"]._serialized_end = 847
-    _globals["_EXECUTENODERESPONSE"]._serialized_start = 850
-    _globals["_EXECUTENODERESPONSE"]._serialized_end = 1072
-    _globals["_ENGINESHUTDOWN"]._serialized_start = 1074
-    _globals["_ENGINESHUTDOWN"]._serialized_end = 1090
-    _globals["_EXECUTORSHUTDOWN"]._serialized_start = 1092
-    _globals["_EXECUTORSHUTDOWN"]._serialized_end = 1110
-    _globals["_WORKFLOWENGINE"]._serialized_start = 1238
-    _globals["_WORKFLOWENGINE"]._serialized_end = 1470
+    _globals["_EXECUTENODEREQUEST"]._serialized_end = 827
+    _globals["_INTERRUPTNODEREQUEST"]._serialized_start = 829
+    _globals["_INTERRUPTNODEREQUEST"]._serialized_end = 869
+    _globals["_EXECUTENODERESPONSE"]._serialized_start = 872
+    _globals["_EXECUTENODERESPONSE"]._serialized_end = 1116
+    _globals["_ENGINESHUTDOWN"]._serialized_start = 1118
+    _globals["_ENGINESHUTDOWN"]._serialized_end = 1134
+    _globals["_EXECUTORSHUTDOWN"]._serialized_start = 1136
+    _globals["_EXECUTORSHUTDOWN"]._serialized_end = 1154
+    _globals["_WORKFLOWENGINE"]._serialized_start = 1282
+    _globals["_WORKFLOWENGINE"]._serialized_end = 1514
 # @@protoc_insertion_point(module_scope)
