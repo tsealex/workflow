@@ -1183,7 +1183,7 @@ class WorkflowEngine(WorkflowEngineServicer):
             finally:
                 del self._executors[executor_id]
 
-    def _sned_execute_node_request(
+    def _send_execute_node_request(
         self, executor_id: UUID, request: messages.ExecuteNodeRequest
     ) -> None:
         """Track `request`'s saved node execution and queue it for `executor_id`.
@@ -1319,7 +1319,7 @@ class WorkflowEngine(WorkflowEngineServicer):
                             node_execution.set_status(ExecutionStatus.SUSPENDED)
                             workflow.set_status(previous_workflow_status)
                         return
-                    self._sned_execute_node_request(executor_id, request)
+                    self._send_execute_node_request(executor_id, request)
 
     async def _process_node_result(
         self,
