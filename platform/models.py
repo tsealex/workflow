@@ -100,19 +100,30 @@ class WorkflowSnapshot(Base):
     ref_count: Mapped[int] = mapped_column(default=0, server_default="0")
     _root: RegionNode | None = None
     _node_map: dict[UUID, Node]
+    _node_region_ids: dict[UUID, UUID]
+    _child_region_ids: dict[UUID, list[UUID]]
 
     def get_root(self) -> RegionNode:
         """Parse and index the stored nodes on first use."""
         if self._root is None:
             root = RegionNode.model_validate(self.root)
             node_map: dict[UUID, Node] = {}
+            node_region_ids: dict[UUID, UUID] = {}
+            nested_region_ids: dict[UUID, list[UUID]] = {}
             pending: list[Node] = [root]
             while pending:
                 node = pending.pop()
                 node_map.setdefault(node.id, node)
                 if isinstance(node, RegionNode):
+                    nested_region_ids[node.id] = []
+                    for child in node.nodes:
+                        node_region_ids[child.id] = node.id
+                        if isinstance(child, RegionNode):
+                            nested_region_ids[node.id].append(child.id)
                     pending.extend(node.nodes)
             self._node_map = node_map
+            self._node_region_ids = node_region_ids
+            self._child_region_ids = nested_region_ids
             self._root = root
         assert self._root is not None
         return self._root
@@ -121,6 +132,31 @@ class WorkflowSnapshot(Base):
         """Return the node with `node_id` or raise KeyError."""
         self.get_root()
         return self._node_map[node_id]
+
+    def get_region_id(self, node_id: UUID) -> UUID:
+        """Return the enclosing region ID, or raise KeyError if none exists."""
+        self.get_root()
+        return self._node_region_ids[node_id]
+
+    def get_child_region_ids(self, region_id: UUID) -> list[UUID]:
+        """Return child region IDs (directly nested).
+
+        Raise KeyError if the region does not exist.
+        """
+        self.get_root()
+        region_ids = self._child_region_ids[region_id].copy()
+        return region_ids
+
+    def get_descendent_region_ids(self, region_id: UUID) -> list[UUID]:
+        """Return all descendant region IDs.
+
+        Raise KeyError if the region does not exist.
+        """
+        self.get_root()
+        region_ids = self._child_region_ids[region_id].copy()
+        for nested_region_id in region_ids:
+            region_ids.extend(self._child_region_ids[nested_region_id])
+        return region_ids
 
     def validate_states(self, inputs: DataMap) -> None:
         """Raise ValidationError if the inputs do not match the state schema."""

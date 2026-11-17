@@ -363,17 +363,33 @@ class WorkflowEngine(WorkflowEngineServicer):
         session: AsyncSession,
         workflow_xid: UUID,
         region_id: UUID | None = None,
-    ) -> None:
+    ):
         """Interrupt unfinished cached node executions of the workflow.
 
         If region_id is supplied, select nodes with that region ID. Save all
         selected nodes before sending interrupt requests to their executors.
         Keep terminal node statuses and the workflow status unchanged.
         """
+        all_region_ids = set()
         workflow_cache = self._workflow_executions[workflow_xid]
         async with workflow_cache.lock:
             interrupted_node_xids = []
             running_nodes = []
+            # Load all nested region ids if a region id is supplied. The engine
+            # interrupts all nodes in the region.
+            if region_id is not None:
+                workflow_exec = await self._checkout_workflow_execution(
+                    session, workflow_xid, cache=workflow_cache,
+                )
+                snapshot = await self._load_workflow_snapshot(
+                    session,
+                    workflow_exec.workflow_id,
+                    workflow_exec.workflow_revision,
+                )
+                all_region_ids = {
+                    region_id,
+                    *snapshot.get_descendent_region_ids(region_id),
+                }
             # The workflow cache identifies its node executions without a query.
             for node_xid in workflow_cache.node_xids:
                 node_exec = await self._checkout_node_execution(
@@ -381,7 +397,7 @@ class WorkflowEngine(WorkflowEngineServicer):
                 )
                 if node_exec.status in TerminalExecutionStatus:
                     continue
-                if region_id is not None and node_exec.region_id != region_id:
+                if region_id and node_exec.region_id not in all_region_ids:
                     continue
                 if node_exec.status == ExecutionStatus.RUNNING:
                     # The engine keeps executor assignments for interrupt requests.
