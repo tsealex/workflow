@@ -188,8 +188,7 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             session.expire(self.node)
         self.engine._running_node_xids[self.node_xid] = self.executor_id
-        async with self.sessions() as session:
-            await self.engine._suspend_running_nodes(session, [self.node_xid])
+        await self.engine._suspend_running_nodes([self.node_xid])
         self.assertEqual(self.node.status, ExecutionStatus.SUSPENDED)
         self.assertNotIn(self.node_xid, self.engine._running_node_xids)
 
