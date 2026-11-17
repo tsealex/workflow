@@ -86,6 +86,11 @@ class NodeType(StrEnum):
     REGION = "region"
 
 
+# Define the node types that can be executed by an executor. Other node types
+# are executed by the engine itself.
+ExecutorNodeTypes = {NodeType.ACTION, NodeType.DECISION}
+
+
 class BaseNode(BaseModel):
     """Provide the identity and name shared by workflow nodes."""
 

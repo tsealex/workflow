@@ -248,10 +248,15 @@ class NodeExecution(Base):
         """Set the status and keep the first end time until execution resumes."""
         self.status = status
         if status in TerminalExecutionStatus:
+            self.executor_id = None
             if self.ended_at is None:
                 self.ended_at = datetime.now(UTC)
         elif status == ExecutionStatus.SUSPENDED:
             self.executor_id = None
+        elif status == ExecutionStatus.RUNNING:
+            assert (
+                self.executor_id is not None
+            ), "executor_id must be set before setting status to RUNNING"
 
 
 class WorkflowExecutorRegistration(Base):
