@@ -614,33 +614,32 @@ class WorkflowEngine(WorkflowEngineServicer):
             await context.abort(
                 grpc.StatusCode.ALREADY_EXISTS, "Executor already connected."
             )
-        # Update the executor registration's last_connected_at timestamp in
-        # the database.
-        async with self._sessions() as session:
-            executor_reg = await session.get(
-                WorkflowExecutorRegistration, executor_id
-            )
-            if not executor_reg:
-                await context.abort(
-                    grpc.StatusCode.UNAUTHENTICATED, "Unknown executor."
-                )
-            executor_reg.last_connected_at = datetime.now(UTC)
-            session.add(executor_reg)
-            await session.commit()
-        # Create a new executor connection and run its receive and send tasks
-        # ∏concurrently.
+        # Register the connection before database waits allow another call.
         executor = _WorkflowExecutorConnection(executor_id, self)
         self._executors[executor_id] = executor
+        # Start the receive and send tasks for the executor.
         tasks = (
             asyncio.create_task(executor.loop_recv_messages(request_iterator)),
             asyncio.create_task(executor.loop_send_messages(context)),
         )
         try:
+            # Save the connection time before the message tasks start.
+            async with self._sessions() as session:
+                executor_reg = await session.get(
+                    WorkflowExecutorRegistration, executor_id
+                )
+                if not executor_reg:
+                    await context.abort(
+                        grpc.StatusCode.UNAUTHENTICATED, "Unknown executor."
+                    )
+                executor_reg.last_connected_at = datetime.now(UTC)
+                session.add(executor_reg)
+                await session.commit()
+            # If one task completes, wait for the other to finish and raise
+            # any exceptions.
             done, _ = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED
             )
-            # If one task completes, wait for the other to finish and raise
-            # any exceptions.
             for task in done:
                 task.result()
         finally:
@@ -653,8 +652,8 @@ class WorkflowEngine(WorkflowEngineServicer):
             # SUSPENDED, and remove them from the running node cache.
             running_node_xids = [
                 node_xid
-                for node_xid, assigned_executor_id in self._running_node_xids.items()
-                if assigned_executor_id == executor_id
+                for node_xid, assigner_id in self._running_node_xids.items()
+                if assigner_id == executor_id
             ]
             with suppress(Exception):
                 await self._suspend_running_nodes(running_node_xids)

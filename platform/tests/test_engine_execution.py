@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import grpc
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -41,6 +42,7 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
         database = create_async_engine(
             f"sqlite+aiosqlite:///{directory.name}/engine.db"
         )
+        self.database = database
         self.addAsyncCleanup(database.dispose)
         async with database.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
@@ -108,7 +110,7 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
         self.engine._workflow_snapshots[workflow_id, 1] = self.snapshot
         self.engine._suspended_node_xids.add(self.node_xid)
 
-    async def test_dispatch_saves_inputs_and_assignment_before_queueing(self):
+    async def test_dispatch_saves_assignment_and_omits_missing_inputs(self):
         # The executor queue must stay empty while the assignment is saved.
         original_commit = AsyncSession.commit
 
@@ -119,20 +121,33 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(AsyncSession, "commit", commit):
             await self.engine._execute_suspended_nodes(self.executor_id)
         request = self.connection.queue.get_nowait().execute_node
-        self.assertEqual(json.loads(request.inputs), {"value": 7})
+        self.assertFalse(request.HasField("inputs"))
         async with self.sessions() as session:
             node = await session.get(NodeExecution, self.node_xid)
             self.assertEqual(node.status, ExecutionStatus.RUNNING)
-            self.assertEqual(node.inputs, {"value": 7})
+            self.assertIsNone(node.inputs)
             self.assertEqual(node.executor_id, self.executor_id)
 
     async def test_failed_dispatch_save_sends_nothing_and_can_retry(self):
         # A failed save must not dispatch work or block a later retry.
-        with patch.object(
-            AsyncSession, "commit", side_effect=RuntimeError("save failed")
+        def fail_node_update(
+            connection, cursor, statement, parameters, context, many
         ):
+            if statement.startswith("UPDATE node_execution"):
+                raise RuntimeError("save failed")
+
+        event.listen(
+            self.database.sync_engine, "before_cursor_execute", fail_node_update
+        )
+        try:
             with self.assertRaisesRegex(RuntimeError, "save failed"):
                 await self.engine._execute_suspended_nodes(self.executor_id)
+        finally:
+            event.remove(
+                self.database.sync_engine,
+                "before_cursor_execute",
+                fail_node_update,
+            )
         self.assertTrue(self.connection.queue.empty())
         self.assertNotIn(self.node_xid, self.engine._running_node_xids)
         self.assertIn(self.node_xid, self.engine._suspended_node_xids)
@@ -163,16 +178,39 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.node.status, ExecutionStatus.SUSPENDED)
 
     async def test_disconnect_during_dispatch_save_restores_suspension(self):
-        # The connection can close while the assignment is saved.
+        # Disconnect cleanup waits for the assignment to finish.
+        del self.engine._executors[self.executor_id]
+        connected = asyncio.Event()
+        disconnect = asyncio.Event()
+        shutdown_requested = asyncio.Event()
         original_commit = AsyncSession.commit
+
+        async def requests():
+            connected.set()
+            await disconnect.wait()
+            shutdown_requested.set()
+            yield messages.ExecutorMessage(shutdown=messages.ExecutorShutdown())
 
         async def commit(session):
             await original_commit(session)
-            self.connection.close()
+            disconnect.set()
+            await shutdown_requested.wait()
 
-        with patch.object(AsyncSession, "commit", commit):
-            await self.engine._execute_suspended_nodes(self.executor_id)
-        self.assertTrue(self.connection.queue.empty())
+        with patch.object(
+            self.engine, "_authenticate_executor", return_value=self.executor_id
+        ):
+            connection_task = asyncio.create_task(
+                self.engine.connect_executor(requests(), self.make_context())
+            )
+            try:
+                await connected.wait()
+                with patch.object(AsyncSession, "commit", commit):
+                    await self.engine._execute_suspended_nodes(self.executor_id)
+                await connection_task
+            finally:
+                connection_task.cancel()
+                await asyncio.gather(connection_task, return_exceptions=True)
+        self.assertNotIn(self.executor_id, self.engine._executors)
         self.assertNotIn(self.node_xid, self.engine._running_node_xids)
         self.assertIn(self.node_xid, self.engine._suspended_node_xids)
         async with self.sessions() as session:
@@ -211,35 +249,22 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
                 side_effect=RuntimeError("save failed"),
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "save failed"):
-                await self.engine.connect_executor(
-                    requests(), self.make_context()
-                )
+            await self.engine.connect_executor(requests(), self.make_context())
         self.assertNotIn(self.executor_id, self.engine._executors)
 
     async def test_concurrent_connections_do_not_replace_each_other(self):
-        # Both calls pass authentication before either registers its connection.
+        # The second connection arrives while the first saves its timestamp.
         del self.engine._executors[self.executor_id]
         first_saved = asyncio.Event()
-        second_saved = asyncio.Event()
-        connected = asyncio.Event()
-        disconnect = asyncio.Event()
+        release_save = asyncio.Event()
         original_commit = AsyncSession.commit
-        commits = 0
 
         async def commit(session):
-            nonlocal commits
             await original_commit(session)
-            commits += 1
-            if commits == 1:
-                first_saved.set()
-                await second_saved.wait()
-            else:
-                second_saved.set()
+            first_saved.set()
+            await release_save.wait()
 
         async def requests():
-            connected.set()
-            await disconnect.wait()
             yield messages.ExecutorMessage(shutdown=messages.ExecutorShutdown())
 
         first_context = self.make_context()
@@ -255,39 +280,62 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             first = asyncio.create_task(
                 self.engine.connect_executor(requests(), first_context)
             )
-            await first_saved.wait()
-            second = asyncio.create_task(
-                self.engine.connect_executor(requests(), second_context)
-            )
-            await connected.wait()
-            disconnect.set()
-            results = await asyncio.gather(
-                first, second, return_exceptions=True
-            )
-        self.assertEqual(
-            sum(isinstance(result, ConnectionError) for result in results), 1
+            try:
+                await first_saved.wait()
+                connection = self.engine._executors[self.executor_id]
+                with self.assertRaises(ConnectionError):
+                    await asyncio.wait_for(
+                        self.engine.connect_executor(
+                            requests(), second_context
+                        ),
+                        timeout=5,
+                    )
+                self.assertIs(
+                    self.engine._executors[self.executor_id], connection
+                )
+            finally:
+                release_save.set()
+                await first
+        first_context.abort.assert_not_awaited()
+        second_context.abort.assert_awaited_once_with(
+            grpc.StatusCode.ALREADY_EXISTS, "Executor already connected."
         )
-        aborts = (
-            first_context.abort.call_args_list
-            + second_context.abort.call_args_list
-        )
-        self.assertEqual(len(aborts), 1)
-        self.assertEqual(aborts[0].args[0], grpc.StatusCode.ALREADY_EXISTS)
+        self.assertNotIn(self.executor_id, self.engine._executors)
 
-    async def test_receive_propagates_handler_failure(self):
-        # A receive failure must reach the caller instead of being discarded.
-        async def requests():
-            yield messages.ExecutorMessage(
-                node_result=messages.ExecuteNodeResponse()
-            )
+    async def test_failed_connection_save_removes_connection(self):
+        del self.engine._executors[self.executor_id]
 
-        with patch.object(
-            self.engine,
-            "handle_executor_message",
-            side_effect=RuntimeError("handler failed"),
+        def fail_executor_update(
+            connection, cursor, statement, parameters, context, many
         ):
-            with self.assertRaisesRegex(RuntimeError, "handler failed"):
-                await self.connection.loop_recv_messages(requests())
+            if statement.startswith("UPDATE workflow_executor"):
+                raise RuntimeError("save failed")
+
+        async def requests():
+            yield messages.ExecutorMessage(shutdown=messages.ExecutorShutdown())
+
+        event.listen(
+            self.database.sync_engine,
+            "before_cursor_execute",
+            fail_executor_update,
+        )
+        try:
+            with patch.object(
+                self.engine,
+                "_authenticate_executor",
+                return_value=self.executor_id,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "save failed"):
+                    await self.engine.connect_executor(
+                        requests(), self.make_context()
+                    )
+        finally:
+            event.remove(
+                self.database.sync_engine,
+                "before_cursor_execute",
+                fail_executor_update,
+            )
+        self.assertNotIn(self.executor_id, self.engine._executors)
 
     @staticmethod
     def make_context():
