@@ -7,6 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from database import AsyncSession
 from models import ExecutionStatus, WorkflowExecution, WorkflowSnapshot
 
 
@@ -18,7 +19,7 @@ class WorkflowSnapshotTriggerTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         database = create_async_engine(os.environ["WORKFLOW_TEST_POSTGRES_URL"])
         self.addAsyncCleanup(database.dispose)
-        self.sessions = async_sessionmaker(database)
+        self.sessions = async_sessionmaker(database, class_=AsyncSession)
         self.workflow_id = uuid4()
         self.addAsyncCleanup(self.delete_workflow_executions)
 

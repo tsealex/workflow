@@ -26,6 +26,7 @@ from nodes import DataMap, Node, RegionNode
 
 
 class ExecutionStatus(StrEnum):
+    PENDING = "PENDING"
     RUNNING = "RUNNING"
     FAILED = "FAILED"
     SUSPENDED = "SUSPENDED"
@@ -36,6 +37,12 @@ class ExecutionStatus(StrEnum):
     def from_proto(cls, value: messages.ExecutionStatus.ValueType) -> Self:
         """Convert a protobuf status; raise ValueError for an unsupported value."""
         return cls(messages.ExecutionStatus.Name(value))
+
+
+SchedulableExecutionStatus: set[ExecutionStatus] = {
+    ExecutionStatus.PENDING,
+    ExecutionStatus.SUSPENDED,
+}
 
 
 TerminalExecutionStatus: set[ExecutionStatus] = {
@@ -231,7 +238,7 @@ class WorkflowExecution(Base):
     __tablename__ = "workflow_execution"
     __table_args__ = (
         CheckConstraint(
-            "status <> 'INTERRUPTED'",
+            "status NOT IN ('PENDING', 'INTERRUPTED')",
             name="workflow_execution_status_check1",
         ),
     )
@@ -257,10 +264,10 @@ class WorkflowExecution(Base):
     def validate_status(
         self, key: str, value: ExecutionStatus | str
     ) -> ExecutionStatus:
-        """Convert the status to ExecutionStatus and reject INTERRUPTED."""
+        """Convert the status to ExecutionStatus and reject node-only statuses."""
         status = ExecutionStatus(value)
-        if status == ExecutionStatus.INTERRUPTED:
-            raise ValueError("INTERRUPTED applies only to node executions.")
+        if status in (ExecutionStatus.PENDING, ExecutionStatus.INTERRUPTED):
+            raise ValueError(f"{status} applies only to node executions.")
         return status
 
 
@@ -273,12 +280,19 @@ class NodeExecution(Base):
     )
     node_id: Mapped[UUID]
     region_id: Mapped[UUID | None]
-    status: Mapped[ExecutionStatus]
+    status: Mapped[ExecutionStatus] = mapped_column(
+        server_default=ExecutionStatus.PENDING
+    )
     started_at: Mapped[datetime]
     inputs: Mapped[dict | None]
     exec_metadata: Mapped[dict | None] = mapped_column("metadata")
     executor_id: Mapped[UUID | None]
     ended_at: Mapped[datetime | None]
+
+    def __init__(
+        self, *, status: ExecutionStatus = ExecutionStatus.PENDING, **kwargs
+    ):
+        super().__init__(status=status, **kwargs)
 
     def set_status(self, status: ExecutionStatus) -> None:
         """Set the status and keep the first end time until execution resumes."""
@@ -289,10 +303,6 @@ class NodeExecution(Base):
                 self.ended_at = datetime.now(UTC)
         elif status == ExecutionStatus.SUSPENDED:
             self.executor_id = None
-        elif status == ExecutionStatus.RUNNING:
-            assert (
-                self.executor_id is not None
-            ), "executor_id must be set before setting status to RUNNING"
 
 
 class WorkflowExecutorRegistration(Base):

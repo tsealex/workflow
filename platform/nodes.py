@@ -17,6 +17,9 @@ from pydantic import (
     model_validator,
 )
 
+INITIAL = UUID(int=0)
+FINAL = UUID(int=1)
+
 DataMap: TypeAlias = dict[str, object]
 
 
