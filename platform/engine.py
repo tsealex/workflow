@@ -517,9 +517,7 @@ class WorkflowEngine(WorkflowEngineServicer):
         # The engine saves the node execution before it queues the
         # request.
         async with executor.lock:
-            if not self._can_executor_run_node(
-                executor, snapshot, node_exec
-            ):
+            if not self._can_executor_run_node(executor, snapshot, node_exec):
                 return False
             # Prepare the execute_node message to send to the executor.
             inputs = (
@@ -559,7 +557,9 @@ class WorkflowEngine(WorkflowEngineServicer):
         region = snapshot.get_node(node_exec.node_id)
         assert isinstance(region, RegionNode)
         # Each direct child reached from this region's INITIAL gets one execution.
-        initial_targets = {edge.to for edge in region.edges if edge.from_ == INITIAL}
+        initial_targets = {
+            edge.to for edge in region.edges if edge.from_ == INITIAL
+        }
         children = {}
         for node in region.nodes:
             if node.id in initial_targets:
@@ -580,11 +580,17 @@ class WorkflowEngine(WorkflowEngineServicer):
 
             # The scheduler can see the children after the database saves the
             # region and its children together in this node's session.
-            @event.listens_for(session.sync_session, "after_commit", once=True)
             def schedule_children(_session):
                 self._node_executions.update(children)
                 workflow_cache.node_xids.update(children)
                 self._add_schedulable_nodes(*children)
+
+            event.listen(
+                session.sync_session,
+                "after_commit",
+                schedule_children,
+                once=True,
+            )
         return None
 
     async def _execute_wait_node(
@@ -627,7 +633,9 @@ class WorkflowEngine(WorkflowEngineServicer):
                     del self._engine_running_node_xids[node_xid]
                 if not finished.cancelled() and (error := finished.exception()):
                     logging.getLogger(__name__).error(
-                        "Local node execution %s failed", node_xid, exc_info=error
+                        "Local node execution %s failed",
+                        node_xid,
+                        exc_info=error,
                     )
 
             task.add_done_callback(on_done)

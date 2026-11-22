@@ -166,7 +166,8 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             dispatched.add(message.execute_node.node_xid)
         self.assertEqual(dispatched, {str(self.node_xid), str(pending.xid)})
         self.assertEqual(
-            set(engine._executor_running_node_xids), {pending.xid, self.node_xid}
+            set(engine._executor_running_node_xids),
+            {pending.xid, self.node_xid},
         )
 
     async def test_round_robin_skips_closing_executors_across_batches(self):
@@ -204,7 +205,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
 
         engine._add_schedulable_nodes(nodes[2].xid)
         await engine._schedule_nodes()
-        self.assertEqual(engine._executor_running_node_xids[nodes[2].xid], second_id)
+        self.assertEqual(
+            engine._executor_running_node_xids[nodes[2].xid], second_id
+        )
         self.assertTrue(closing.queue.empty())
 
     async def test_scheduler_dispatches_other_nodes_after_a_failed_save(self):
@@ -310,8 +313,16 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("save failed")
 
         for target, event_name, listener in (
-            (self.database.sync_engine, "before_cursor_execute", fail_node_update),
-            (AsyncSession.sync_session_class, "before_commit", fail_before_commit),
+            (
+                self.database.sync_engine,
+                "before_cursor_execute",
+                fail_node_update,
+            ),
+            (
+                AsyncSession.sync_session_class,
+                "before_commit",
+                fail_before_commit,
+            ),
         ):
             with self.subTest(event=event_name):
                 event.listen(target, event_name, listener)
@@ -322,7 +333,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
                 finally:
                     event.remove(target, event_name, listener)
                 self.assertTrue(self.connection.queue.empty())
-                self.assertNotIn(self.node_xid, self.engine._executor_running_node_xids)
+                self.assertNotIn(
+                    self.node_xid, self.engine._executor_running_node_xids
+                )
                 self.assertIn(self.node_xid, self.engine._schedulable_node_xids)
         await self.engine._schedule_nodes()
         self.assertFalse(self.connection.queue.empty())
@@ -361,12 +374,18 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
         def fail_before_commit(session):
             raise RuntimeError("save failed")
 
-        event.listen(AsyncSession.sync_session_class, "before_commit", fail_before_commit)
+        event.listen(
+            AsyncSession.sync_session_class, "before_commit", fail_before_commit
+        )
         try:
             with self.assertLogs("engine", level="ERROR"):
                 await engine._schedule_nodes()
         finally:
-            event.remove(AsyncSession.sync_session_class, "before_commit", fail_before_commit)
+            event.remove(
+                AsyncSession.sync_session_class,
+                "before_commit",
+                fail_before_commit,
+            )
         self.assertEqual(set(engine._node_executions), {self.node_xid})
         self.assertEqual(engine._schedulable_node_xids, {self.node_xid})
 
@@ -376,7 +395,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             workflow = await session.get(WorkflowExecution, self.workflow_xid)
             children = (
                 await session.scalars(
-                    select(NodeExecution).where(NodeExecution.region_id == root.id)
+                    select(NodeExecution).where(
+                        NodeExecution.region_id == root.id
+                    )
                 )
             ).all()
         self.assertEqual(region.status, ExecutionStatus.RUNNING)
@@ -447,7 +468,11 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             id=node_id, name="Signal", event_id=uuid4(), input_states=[]
         )
         for node, method, expected_args in (
-            (region, "_execute_region_node", (self.snapshot, self.workflow, self.node)),
+            (
+                region,
+                "_execute_region_node",
+                (self.snapshot, self.workflow, self.node),
+            ),
             (wait, "_execute_wait_node", (self.node,)),
             (signal, "_execute_signal_node", (self.node,)),
         ):
@@ -481,7 +506,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
     async def test_local_task_is_removed_on_completion(self):
         finish = asyncio.Event()
         task = await self.schedule_local_wait_task(finish)
-        self.assertIs(self.engine._engine_running_node_xids[self.node_xid], task)
+        self.assertIs(
+            self.engine._engine_running_node_xids[self.node_xid], task
+        )
         finish.set()
         await task
         self.assertNotIn(self.node_xid, self.engine._engine_running_node_xids)
@@ -505,7 +532,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_save_cancels_local_task(self):
         with (
-            patch.object(self.engine, "_save_running_node", side_effect=RuntimeError),
+            patch.object(
+                self.engine, "_save_running_node", side_effect=RuntimeError
+            ),
             self.assertLogs("engine", level="ERROR"),
         ):
             task = await self.schedule_local_wait_task(asyncio.Event())
@@ -555,7 +584,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.status, ExecutionStatus.SUSPENDED)
             self.assertIsNone(node.executor_id)
 
-    async def test_executor_disconnect_keeps_workflow_with_running_region_active(self):
+    async def test_executor_disconnect_keeps_workflow_with_running_region_active(
+        self,
+    ):
         region_xid = uuid4()
         region = NodeExecution(
             xid=region_xid,
@@ -567,12 +598,15 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             session.add(region)
             await session.commit()
         self.engine._node_executions[region_xid] = _CachedNodeExecution(region)
-        self.engine._workflow_executions[self.workflow_xid].node_xids.add(region_xid)
+        self.engine._workflow_executions[self.workflow_xid].node_xids.add(
+            region_xid
+        )
         self.engine._add_schedulable_nodes(region_xid)
         await self.engine._schedule_nodes()
-        self.assertEqual(self.engine._executor_running_node_xids, {
-            self.node_xid: self.executor_id
-        })
+        self.assertEqual(
+            self.engine._executor_running_node_xids,
+            {self.node_xid: self.executor_id},
+        )
 
         await self.engine._suspend_running_nodes([self.node_xid])
         async with self.sessions() as session:
@@ -590,7 +624,9 @@ class EngineExecutionTest(unittest.IsolatedAsyncioTestCase):
             self.node.status = ExecutionStatus.RUNNING
             await session.commit()
             session.expire(self.node)
-        self.engine._executor_running_node_xids[self.node_xid] = self.executor_id
+        self.engine._executor_running_node_xids[self.node_xid] = (
+            self.executor_id
+        )
         await self.engine._suspend_running_nodes([self.node_xid])
         self.assertEqual(self.node.status, ExecutionStatus.SUSPENDED)
         self.assertEqual(self.workflow.status, ExecutionStatus.SUSPENDED)
